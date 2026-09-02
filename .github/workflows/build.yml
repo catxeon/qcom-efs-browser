@@ -1,0 +1,51 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  NDK_VERSION: 27.2.12479018
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the helper for the host and run the protocol tests
+        run: |
+          mkdir -p build
+          gcc -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -fno-strict-aliasing -Werror -o build/qcom-efsd-host daemon/src/util.c daemon/src/selinux.c daemon/src/diag.c daemon/src/efs2.c daemon/src/main.c
+          python3 daemon/test/run_tests.py build/qcom-efsd-host
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install the NDK
+        run: sdkmanager --install "ndk;${NDK_VERSION}"
+
+      - name: Build the root helper
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/${NDK_VERSION}"
+          bash daemon/build.sh
+          file android/app/src/main/assets/qcom-efsd
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Assemble the debug APK
+        run: gradle --project-dir android assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qcom-efs-debug
+          path: |
+            android/app/build/outputs/apk/debug/*.apk
+            android/app/src/main/assets/qcom-efsd

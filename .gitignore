@@ -1,0 +1,29 @@
+# An EFS dump carries the IMEI, radio calibration and keys of one specific
+# device.  It must never be committed.
+backup/
+*.qcn
+*.xqcn
+
+# Gradle / Android Studio
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/.kotlin/
+.idea/
+
+# The helper is a build product; CI and daemon/build.sh produce it.
+android/app/src/main/assets/qcom-efsd
+daemon/tools/qcom-efsd-dyn
+daemon/tools/qrtr_probe
+daemon/tools/qrtr_diag_probe
+*.o
+*.exe
+
+# APKs, including the reference app this project started from
+*.apk
+*.zip
+
+__pycache__/
+*.pyc
