@@ -21,8 +21,16 @@ daemon/tools/qrtr_diag_probe
 *.o
 *.exe
 
+# Signing keys.  The real one lives outside this tree entirely, but a stray
+# keystore here must never be committed.
+*.jks
+*.keystore
+*.p12
+keystore.properties
+
 # APKs, including the reference app this project started from
 *.apk
+*.apk.idsig
 *.zip
 
 __pycache__/

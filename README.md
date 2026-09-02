@@ -80,6 +80,22 @@ cd android && gradle assembleDebug
 `ANDROID_NDK_HOME`, а ассет отсутствует или старше исходников. В Android Studio
 достаточно открыть каталог `android/` (Gradle wrapper студия создаст сама).
 
+### Подписанная сборка релиза
+
+Gradle-конфигурация ключей не содержит — подпись делается отдельно, чтобы
+секретам негде было утечь в репозиторий:
+
+```bash
+cd android && gradle assembleRelease
+BT=$ANDROID_HOME/build-tools/35.0.0
+$BT/zipalign -p -f 4 app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
+$BT/apksigner sign --ks <путь-к-хранилищу>.jks --ks-key-alias <алиас> --out qcom-efs-browser.apk aligned.apk
+$BT/apksigner verify --print-certs qcom-efs-browser.apk
+```
+
+При `minSdk 26` схемы v2/v3 достаточно, v1 (JAR) не нужна. Релизная сборка
+проходит через R8 и не имеет флага `debuggable`.
+
 ---
 
 ## Протокол хелпера
