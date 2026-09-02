@@ -123,6 +123,13 @@ object Paths {
     fun child(dir: String, name: String): String =
         if (dir == "/") "/$name" else "${dir.trimEnd('/')}/$name"
 
+    /** Mirrors efs_is_item_path() in the helper: where item files normally live. */
+    fun looksLikeItemPath(path: String): Boolean =
+        path.startsWith("/nv/item_files/") ||
+        path.startsWith("/nv/reg_files/") ||
+        path.startsWith("/cgps/nv/item_files/") ||
+        path.startsWith("/sd/")
+
     fun crumbs(path: String): List<Pair<String, String>> {
         val out = mutableListOf("/" to "/")
         var acc = ""

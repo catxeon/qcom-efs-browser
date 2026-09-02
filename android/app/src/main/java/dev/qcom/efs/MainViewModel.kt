@@ -259,10 +259,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun importInto(uri: Uri, targetPath: String) = work("writing $targetPath") {
+    fun importInto(uri: Uri, targetPath: String, asItem: Boolean? = null) =
+        work("writing $targetPath") {
         val bytes = repo.readUri(uri)
-        repo.writeFile(targetPath, bytes)
-        _state.update { it.copy(toast = "Wrote ${bytes.size} bytes to $targetPath") }
+        repo.writeFile(targetPath, bytes, item = asItem)
+        val kind = if (asItem == true) "item file" else "file"
+        _state.update { it.copy(toast = "Wrote ${bytes.size} bytes as a $kind") }
         val entries = repo.list(_state.value.path)
         _state.update { it.copy(entries = entries) }
     }

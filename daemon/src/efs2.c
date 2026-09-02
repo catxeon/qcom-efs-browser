@@ -684,11 +684,12 @@ int efs_read_file(efs_t *e, const char *path, uint8_t **out, size_t *len)
 }
 
 int efs_write_file(efs_t *e, const char *path, const uint8_t *data, size_t len,
-                   int16_t mode)
+                   int16_t mode, int force_item)
 {
     if (need_session(e) < 0) return -1;
 
-    int item = efs_is_item_path(path);
+    /* The path only suggests the type; an explicit choice wins. */
+    int item = (force_item < 0) ? efs_is_item_path(path) : (force_item != 0);
 
     /* The atomic item interface is only correct for item paths.  Used on an
      * ordinary path it stores the file as an item file (mode 0160777, with the

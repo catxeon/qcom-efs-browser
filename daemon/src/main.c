@@ -491,6 +491,11 @@ static void cmd_write(const char *req, sbuf *o)
     if (get_path(req, o, path, sizeof path) < 0) return;
     json_get_i64(req, "mode", &mode);
 
+    /* "item": true forces an EFS item file, false forces an ordinary file.
+     * Left out, the path decides -- /nv/item_files/... and friends. */
+    int want_item = 0;
+    int force_item = (json_get_bool(req, "item", &want_item) == 0) ? want_item : -1;
+
     uint8_t *data = NULL;
     size_t len = 0;
 
@@ -515,13 +520,16 @@ static void cmd_write(const char *req, sbuf *o)
         len = (size_t)dl;
     }
 
-    int rc = efs_write_file(&g_efs, path, data, len, (int16_t)mode);
+    int rc = efs_write_file(&g_efs, path, data, len, (int16_t)mode, force_item);
     free(data);
 
     if (rc < 0) { fail_efs(o, &g_efs); return; }
+
+    /* Report the type actually written, so a caller never has to guess. */
+    int wrote_item = (force_item < 0) ? efs_is_item_path(path) : (force_item != 0);
     sb_str(o, "{\"ok\":true,\"path\":");
     sb_json_str(o, path);
-    sb_fmt(o, ",\"size\":%zu}", len);
+    sb_fmt(o, ",\"size\":%zu,\"item\":%s}", len, wrote_item ? "true" : "false");
 }
 
 static void cmd_stat(const char *req, sbuf *o)

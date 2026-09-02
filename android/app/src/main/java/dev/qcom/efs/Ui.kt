@@ -45,6 +45,7 @@ fun App(vm: MainViewModel) {
     var chmodTarget by remember { mutableStateOf<Detail?>(null) }
     var confirmDelete by remember { mutableStateOf<Detail?>(null) }
     var importTarget by remember { mutableStateOf<String?>(null) }
+    var importAsItem by remember { mutableStateOf<Boolean?>(null) }
     var pendingImport by remember { mutableStateOf<Uri?>(null) }
 
     val exporter = rememberLauncherForActivityResult(
@@ -60,7 +61,7 @@ fun App(vm: MainViewModel) {
             val target = importTarget
             if (target != null) {
                 importTarget = null
-                vm.importInto(uri, target)
+                vm.importInto(uri, target, importAsItem)
             } else {
                 pendingImport = uri
             }
@@ -201,7 +202,11 @@ fun App(vm: MainViewModel) {
             onDismiss = { vm.closeDetail() },
             onPreview = { vm.preview(detail.path) },
             onExport = { vm.requestExport(detail.path) },
-            onReplace = { importTarget = detail.path; importer.launch(arrayOf("*/*")) },
+            onReplace = {
+                importTarget = detail.path
+                importAsItem = detail.entry.isItem
+                importer.launch(arrayOf("*/*"))
+            },
             onChmod = { chmodTarget = detail },
             onDelete = { confirmDelete = detail },
         )
@@ -237,13 +242,15 @@ fun App(vm: MainViewModel) {
     }
 
     pendingImport?.let { uri ->
-        TextPromptDialog(
-            title = "Write into ${state.path}",
-            label = "File name",
-            initial = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: "file",
-            onConfirm = { name ->
+        ImportDialog(
+            dir = state.path,
+            initialName = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
+                ?: "file",
+            onConfirm = { name, asItem ->
                 pendingImport = null
-                if (name.isNotBlank()) vm.importInto(uri, Paths.child(state.path, name.trim()))
+                if (name.isNotBlank()) {
+                    vm.importInto(uri, Paths.child(state.path, name.trim()), asItem)
+                }
             },
             onDismiss = { pendingImport = null },
         )
@@ -720,6 +727,64 @@ private fun RawDialog(vm: MainViewModel, onDismiss: () -> Unit) {
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+/**
+ * Asks for the name and, just as importantly, the type.  An EFS item file is
+ * a different kind of object from an ordinary file -- it is stored through the
+ * item interface and carries mode 0160xxx -- and the modem cares which one it
+ * gets.  The path only hints at the answer, so the choice is explicit.
+ */
+@Composable
+private fun ImportDialog(
+    dir: String,
+    initialName: String,
+    onConfirm: (String, Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf(initialName) }
+    // Pre-select what the destination path suggests, but let it be overridden.
+    var asItem by remember(name) { mutableStateOf(Paths.looksLikeItemPath(Paths.child(dir, name))) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Write into $dir") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("File name") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                )
+
+                Text("Store as", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = !asItem,
+                        onClick = { asItem = false },
+                        label = { Text("Regular file") },
+                    )
+                    FilterChip(
+                        selected = asItem,
+                        onClick = { asItem = true },
+                        label = { Text("Item file") },
+                    )
+                }
+                Text(
+                    if (asItem)
+                        "Written through the item interface, the way the modem expects " +
+                                "entries under /nv/item_files to be stored."
+                    else
+                        "An ordinary file, written with open/write/close and the mode you asked for.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(name, asItem) }) { Text("Write") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 

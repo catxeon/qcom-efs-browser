@@ -338,6 +338,30 @@ def run(c, tmp):
     r = c.cmd(cmd="unlink", path="/rw/big_upload.bin")
     check("unlink", r.get("ok"), r)
 
+    # ---- the type of a written file is a choice, not a guess ------------
+    body = base64.b64encode(b"forced").decode()
+
+    # An ordinary path asked to become an item file.
+    r = c.cmd(cmd="write", path="/rw/forced_item", data=body, item=True)
+    check("write reports the type it used", r.get("item") is True, r)
+    r = c.cmd(cmd="stat", path="/rw/forced_item")
+    check("an ordinary path can be stored as an item file", r.get("type") == "item", r)
+
+    # An item path asked to stay an ordinary file.
+    item_path = "/nv/item_files/modem/nas/plain_on_purpose"
+    r = c.cmd(cmd="write", path=item_path, data=body, item=False)
+    check("the item flag can be turned off too", r.get("item") is False, r)
+    r = c.cmd(cmd="stat", path=item_path)
+    check("an item path can be stored as an ordinary file", r.get("type") == "file", r)
+
+    # Left unset, the path still decides.
+    r = c.cmd(cmd="write", path="/nv/item_files/modem/nas/by_path", data=body)
+    check("without the flag the path still decides", r.get("item") is True, r)
+
+    c.cmd(cmd="unlink", path="/rw/forced_item")
+    c.cmd(cmd="unlink", path=item_path)
+    c.cmd(cmd="unlink", path="/nv/item_files/modem/nas/by_path")
+
     # ---- rename and symlinks -------------------------------------------
     # These are the calls qfenix's opcode numbering gets wrong: with its
     # numbers a readlink lands on RENAME and every unlink fails.

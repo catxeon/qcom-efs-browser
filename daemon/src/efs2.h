@@ -89,8 +89,9 @@ int  efs_image_dump(efs_t *e, const char *efs_path, const char *local_path,
 
 /* Convenience wrappers used by the command layer. */
 int  efs_read_file(efs_t *e, const char *path, uint8_t **out, size_t *len);
+/* force_item: -1 decide from the path, 0 write a regular file, 1 an item file. */
 int  efs_write_file(efs_t *e, const char *path, const uint8_t *data, size_t len,
-                    int16_t mode);
+                    int16_t mode, int force_item);
 int  efs_is_item_path(const char *path);
 
 /* NV items (DIAG 0x26/0x27 and the indexed 0x4B/0x30 variants). */

@@ -24,7 +24,7 @@ abstract socket → JSON), но транспорт другой: там QMI по
 | Метаданные, симлинки | `LSTAT` с откатом на `STAT` + `READLINK` |
 | Просмотр файла (текст/hex) | `OPEN/READ/CLOSE`, для item-файлов — `GET` |
 | Сохранение файла на телефон | чтение → кеш → SAF (`CreateDocument`) |
-| Загрузка/замена файла | `OPEN/WRITE/CLOSE`; для item-путей — атомарный `PUT` |
+| Загрузка/замена файла с выбором типа | обычный файл — `OPEN/WRITE/CLOSE`, item-файл — атомарный `PUT` |
 | `mkdir`, `chmod`, `rename`, `symlink`, удаление файла и дерева | `MKDIR`, `CHMOD`, `RENAME`, `SYMLINK`, `UNLINK`, `RMDIR` |
 | Бэкап поддерева tar-ом, который делает сам модем | `FS_IMAGE_OPEN/READ/CLOSE` (54–56) |
 | Бэкап поддерева пофайлово в zip | рекурсивный обход + zip на стороне приложения |
@@ -111,6 +111,7 @@ $BT/apksigner verify --print-certs qcom-efs-browser.apk
 {"cmd":"read","path":"/policyman/carrier_policy.xml"}          // inline base64
 {"cmd":"read","path":"/big.bin","out":"/data/.../cache/x.bin"} // в файл
 {"cmd":"write","path":"/foo","src":"/data/.../upload.bin","mode":420}
+{"cmd":"write","path":"/foo","data":"…","item":true}   // item-файл вместо обычного
 {"cmd":"mkdir","path":"/foo","mode":511}
 {"cmd":"unlink","path":"/foo/bar"}
 {"cmd":"rmtree","path":"/foo"}

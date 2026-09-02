@@ -128,7 +128,13 @@ class EfsRepository(private val ctx: Context) {
 
     // ---- mutations -----------------------------------------------------
 
-    suspend fun writeFile(path: String, data: ByteArray, mode: Int = 420 /* 0644 */) =
+    /** [item] null lets the path decide; true or false forces the type. */
+    suspend fun writeFile(
+        path: String,
+        data: ByteArray,
+        mode: Int = 420 /* 0644 */,
+        item: Boolean? = null,
+    ) =
         withContext(Dispatchers.IO) {
             val dir = File(ctx.cacheDir, "push").apply { mkdirs() }
             val tmp = File(dir, "upload.bin")
@@ -139,6 +145,7 @@ class EfsRepository(private val ctx: Context) {
                     put("path", path)
                     put("src", tmp.absolutePath)
                     put("mode", mode)
+                    if (item != null) put("item", item)
                 }
             } finally {
                 tmp.delete()
