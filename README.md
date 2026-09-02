@@ -377,9 +377,20 @@ android/
     Ui.kt               Compose-интерфейс
 ```
 
+## Лицензия
+
+BSD 3-Clause — см. [LICENSE](LICENSE). Там же перечислено, откуда взято знание
+о формате пакетов.
+
 ## Благодарности
 
-* [qfenix](https://github.com/iamromulan/qfenix) — раскладки пакетов EFS2/NV.
+* [qfenix](https://github.com/iamromulan/qfenix) (BSD-3-Clause) — раскладки
+  полей EFS2/NV и несколько деталей, которые иначе пришлось бы искать на живом
+  железе: POSIX-флаги `open`, 16-битные поля `mode`, смещения в ответе `PUT`.
+  Нумерацию опкодов, наоборот, пришлось брать не оттуда — см. раздел выше.
+* [libopenpst](https://github.com/openpst/libopenpst) и EfsTools — классическая
+  нумерация опкодов EFS2, с которой и согласуется реальный модем.
 * [QCSuper](https://github.com/P1sec/QCSuper), MobileInsight `diag_revealer` —
-  работа с `/dev/diag` на Android.
+  формат контейнера `/dev/diag` и приём с зондированием длины аргумента
+  `DIAG_IOCTL_SWITCH_LOGGING`. Код не заимствован, подход воспроизведён заново.
 * `qcom-band-menu` — схема «root-демон + abstract socket + Compose-клиент».
