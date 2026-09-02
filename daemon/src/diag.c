@@ -540,20 +540,34 @@ int diag_recv(diag_t *d, uint8_t *out, size_t outsz, int timeout_ms,
             if (n <= 0) continue;
             d->rx_frames++;
 
-            /* The answer is wrapped as 7E 01 <len16> <payload> 7E.  Some
-             * packets arrive raw, so fall back to using them whole. */
             const uint8_t *p = rx;
             size_t plen = (size_t)n;
-            if (n >= 5 && rx[0] == 0x7E && rx[1] == 0x01) {
-                size_t declared = (size_t)rx[2] | ((size_t)rx[3] << 8);
-                if (declared && 4 + declared <= (size_t)n) {
-                    p = rx + 4;
-                    plen = declared;
-                } else {
+
+            /* Newer targets (SM8850 and up) put a 4-byte header in front of
+             * every datagram: [u16 type = 8][u16 length of the rest].  SM8350
+             * does not.  Strip it only when the length field agrees exactly
+             * and the DIAG wrapper really follows, so a payload that happens
+             * to start with those bytes is never mistaken for a header. */
+            if (plen >= 8) {
+                size_t declared = (size_t)p[2] | ((size_t)p[3] << 8);
+                if (declared + 4 == plen && p[4] == 0x7E) {
+                    p += 4;
+                    plen -= 4;
+                }
+            }
+
+            /* Then the DIAG wrapper itself: 7E 01 <len16> <payload> 7E.
+             * A packet that arrives raw is used whole. */
+            if (plen >= 5 && p[0] == 0x7E && p[1] == 0x01) {
+                size_t declared = (size_t)p[2] | ((size_t)p[3] << 8);
+                if (declared == 0 || declared + 4 > plen) {
                     d->rx_dropped++;
                     continue;
                 }
+                p += 4;
+                plen = declared;
             }
+
             if (plen > outsz) plen = outsz;
             memcpy(out, p, plen);
 
