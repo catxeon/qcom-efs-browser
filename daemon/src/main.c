@@ -29,7 +29,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define QEFSD_VERSION   "1.0.0"
+#define QEFSD_VERSION   "1.0.1"
 #define DEFAULT_SOCKET  "qcom_efsd"
 #define MAX_LINE        (4u * 1024 * 1024)
 #define MAX_INLINE_READ (512u * 1024)
