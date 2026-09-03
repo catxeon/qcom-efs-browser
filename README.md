@@ -1,6 +1,6 @@
 # Qualcomm EFS — an Android app for the modem's filesystem
 
-(Download from releases)[https://github.com/catxeon/qcom-efs-browser/releases]
+[Download from releases](https://github.com/catxeon/qcom-efs-browser/releases)
 
 A browser and editor for EFS2, the internal filesystem of a Qualcomm modem,
 for Android. The app is two parts:
