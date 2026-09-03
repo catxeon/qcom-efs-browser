@@ -23,6 +23,26 @@ data class PreviewData(val path: String, val bytes: ByteArray, val asText: Boole
 /** A file staged in the cache, waiting for the user to pick a destination. */
 data class PendingExport(val file: File, val suggestedName: String, val mime: String)
 
+/**
+ * A file open in the editor.  [original] is what was read from the modem: the
+ * editor compares against it to know whether anything was actually changed, and
+ * [mode] and [isItem] are carried along so that saving writes the file back as
+ * the same kind of object it already was.
+ */
+data class EditorData(
+    val path: String,
+    val original: ByteArray,
+    val mode: Int,
+    val isItem: Boolean,
+    val startAsText: Boolean,
+) {
+    override fun equals(other: Any?) = this === other
+    override fun hashCode() = System.identityHashCode(this)
+}
+
+/** Anything larger is better edited on a computer than in a text field. */
+private const val MAX_EDIT = 64 * 1024
+
 data class UiState(
     val phase: Phase = Phase.DISCONNECTED,
     val error: String? = null,
@@ -38,6 +58,7 @@ data class UiState(
     val toast: String? = null,
     val detail: Detail? = null,
     val preview: PreviewData? = null,
+    val editor: EditorData? = null,
     val pendingExport: PendingExport? = null,
     val nv: NvResult? = null,
     val nvError: String? = null,
@@ -185,12 +206,54 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun closeDetail() = _state.update { it.copy(detail = null) }
     fun closePreview() = _state.update { it.copy(preview = null) }
+    fun closeEditor() = _state.update { it.copy(editor = null) }
 
     fun preview(path: String) = work("reading $path") {
         val bytes = repo.readInline(path)
-        val printable = bytes.count { val c = it.toInt() and 0xFF; c in 32..126 || c in listOf(9, 10, 13) }
-        val asText = bytes.isNotEmpty() && printable > bytes.size * 8 / 10
-        _state.update { it.copy(preview = PreviewData(path, bytes, asText)) }
+        _state.update { it.copy(preview = PreviewData(path, bytes, looksLikeText(bytes))) }
+    }
+
+    // ---- editing -------------------------------------------------------
+
+    fun edit(detail: Detail) = work("reading ${detail.path}") {
+        val bytes = repo.readInline(detail.path)
+        if (bytes.size > MAX_EDIT) {
+            _state.update {
+                it.copy(toast = "${humanSize(bytes.size.toLong())} is too much for the editor - " +
+                        "save it, change it on a computer and put it back with Replace")
+            }
+            return@work
+        }
+        val mode = ((detail.stat?.mode ?: detail.entry.mode) and 0xFFF).let { if (it == 0) 420 else it }
+        _state.update {
+            it.copy(
+                detail = null,
+                editor = EditorData(
+                    path = detail.path,
+                    original = bytes,
+                    mode = mode,
+                    isItem = detail.entry.isItem,
+                    // An item file is a blob with a layout the modem cares
+                    // about, so it opens in hex even when it reads as text.
+                    startAsText = !detail.entry.isItem && looksLikeText(bytes),
+                ),
+            )
+        }
+    }
+
+    fun saveEditor(bytes: ByteArray) {
+        val ed = _state.value.editor ?: return
+        work("writing ${ed.path}") {
+            repo.writeFile(ed.path, bytes, ed.mode, ed.isItem)
+            val entries = repo.list(_state.value.path)
+            _state.update {
+                it.copy(
+                    editor = null,
+                    entries = entries,
+                    toast = "Wrote ${bytes.size} bytes to ${ed.path.substringAfterLast('/')}",
+                )
+            }
+        }
     }
 
     // ---- transfers -----------------------------------------------------

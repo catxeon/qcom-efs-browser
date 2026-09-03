@@ -1,6 +1,10 @@
 package dev.qcom.efs
 
 import org.json.JSONObject
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.Charset
+import java.nio.charset.CodingErrorAction
 
 data class EfsEntry(
     val name: String,
@@ -111,3 +115,55 @@ fun humanSize(bytes: Long): String = when {
     bytes < 1024 * 1024 -> String.format("%.1f KiB", bytes / 1024.0)
     else -> String.format("%.1f MiB", bytes / (1024.0 * 1024))
 }
+
+// ---- text and hex, for previewing and editing ---------------------------
+
+/** Mostly printable, so a text view of it is worth offering. */
+fun looksLikeText(bytes: ByteArray): Boolean {
+    if (bytes.isEmpty()) return true
+    val printable = bytes.count { val c = it.toInt() and 0xFF; c in 32..126 || c == 9 || c == 10 || c == 13 }
+    return printable > bytes.size * 8 / 10
+}
+
+/**
+ * UTF-8 when the bytes really decode as UTF-8, latin-1 otherwise.
+ *
+ * Latin-1 maps every one of the 256 byte values to a character and back, so a
+ * file that is not text at all still survives being opened and saved untouched;
+ * UTF-8 would replace whatever it could not decode.
+ */
+fun textCharset(bytes: ByteArray): Charset = try {
+    Charsets.UTF_8.newDecoder()
+        .onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT)
+        .decode(ByteBuffer.wrap(bytes))
+    Charsets.UTF_8
+} catch (_: CharacterCodingException) {
+    Charsets.ISO_8859_1
+}
+
+/** Bytes as editable hex: lowercase pairs, sixteen to a line, nothing else. */
+fun hexText(bytes: ByteArray): String = buildString(bytes.size * 3) {
+    bytes.forEachIndexed { i, b ->
+        if (i > 0) append(if (i % 16 == 0) '\n' else ' ')
+        append(HEX[(b.toInt() shr 4) and 0xF])
+        append(HEX[b.toInt() and 0xF])
+    }
+}
+
+/**
+ * Parses what [hexText] produces, and what a person is likely to type into it:
+ * whitespace anywhere is ignored, everything else has to be a hex digit.
+ * Throws [IllegalArgumentException] with a message meant for the screen.
+ */
+fun parseHexText(text: String): ByteArray {
+    val digits = text.filterNot { it.isWhitespace() }
+    val bad = digits.indexOfFirst { Character.digit(it, 16) < 0 }
+    require(bad < 0) { "'${digits[bad]}' is not a hex digit" }
+    require(digits.length % 2 == 0) { "${digits.length} hex digits: one is missing from the last byte" }
+    return ByteArray(digits.length / 2) {
+        ((Character.digit(digits[it * 2], 16) shl 4) or Character.digit(digits[it * 2 + 1], 16)).toByte()
+    }
+}
+
+private const val HEX = "0123456789abcdef"

@@ -214,6 +214,7 @@ fun App(vm: MainViewModel) {
             readOnly = state.readOnly,
             onDismiss = { vm.closeDetail() },
             onPreview = { vm.preview(detail.path) },
+            onEdit = { vm.edit(detail) },
             onExport = { vm.requestExport(detail.path) },
             onReplace = {
                 importTarget = detail.path
@@ -226,8 +227,11 @@ fun App(vm: MainViewModel) {
     }
 
     state.preview?.let { PreviewDialog(it) { vm.closePreview() } }
+    state.editor?.let { ed ->
+        EditorDialog(ed, state.busy, onSave = { vm.saveEditor(it) }, onDismiss = { vm.closeEditor() })
+    }
 
-    if (showLog) LogDialog(state, onRefresh = { vm.refreshLog(); vm.refreshSelinux() }) { showLog = false }
+    if (showLog) LogDialog(state, onRefresh = { vm.refreshLog() }) { showLog = false }
     if (showNv) NvDialog(state, vm) { showNv = false }
     if (showRaw) RawDialog(vm) { showRaw = false }
 
@@ -449,6 +453,7 @@ private fun DetailSheet(
     readOnly: Boolean,
     onDismiss: () -> Unit,
     onPreview: () -> Unit,
+    onEdit: () -> Unit,
     onExport: () -> Unit,
     onReplace: () -> Unit,
     onChmod: () -> Unit,
@@ -492,6 +497,13 @@ private fun DetailSheet(
             }
             if (!readOnly) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!detail.entry.isDir && !detail.entry.isLink) {
+                        OutlinedButton(onClick = onEdit) {
+                            Icon(Icons.Filled.Edit, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Edit")
+                        }
+                    }
                     if (!detail.entry.isDir) {
                         OutlinedButton(onClick = onReplace) {
                             Icon(Icons.Filled.Upload, null, Modifier.size(18.dp))
@@ -553,6 +565,157 @@ private fun PreviewDialog(data: PreviewData, onDismiss: () -> Unit) {
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
+}
+
+/**
+ * The built-in editor: text for configuration files, hex for item files and for
+ * anything else that does not read as text.  The two views are two ways of
+ * typing the same bytes, so switching between them carries the content across.
+ *
+ * The file is written back as the kind of object it already was -- an item file
+ * stays an item file, and the mode is the one it had.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EditorDialog(
+    data: EditorData,
+    busy: Boolean,
+    onSave: (ByteArray) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val charset = remember(data) { textCharset(data.original) }
+    var asText by remember(data) { mutableStateOf(data.startAsText) }
+    var text by remember(data) { mutableStateOf(String(data.original, charset)) }
+    var hex by remember(data) { mutableStateOf(hexText(data.original)) }
+    var error by remember(data) { mutableStateOf<String?>(null) }
+    var confirmDiscard by remember(data) { mutableStateOf(false) }
+
+    // What the current view would write, or why it cannot be written at all.
+    val parsed = remember(asText, text, hex, charset) {
+        if (asText) Result.success(text.toByteArray(charset)) else runCatching { parseHexText(hex) }
+    }
+    val bytes = parsed.getOrNull()
+    val why = parsed.exceptionOrNull()?.message ?: "this is not valid hex"
+    val dirty = bytes == null || !bytes.contentEquals(data.original)
+    val resized = bytes != null && bytes.size != data.original.size
+
+    fun leave() { if (dirty) confirmDiscard = true else onDismiss() }
+
+    fun switchTo(wantText: Boolean) {
+        if (wantText == asText) return
+        val b = bytes
+        if (b == null) { error = why; return }
+        if (wantText) text = String(b, charset) else hex = hexText(b)
+        asText = wantText
+        error = null
+    }
+
+    Dialog(
+        onDismissRequest = { leave() },
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize()) {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text(
+                                data.path.substringAfterLast('/'),
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                data.path,
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { leave() }) { Icon(Icons.Filled.Close, "Close") }
+                    },
+                    actions = {
+                        TextButton(
+                            onClick = { bytes?.let(onSave) },
+                            enabled = bytes != null && dirty && !busy,
+                        ) { Text("Save") }
+                    },
+                )
+                if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+
+                Row(
+                    Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FilterChip(selected = asText, onClick = { switchTo(true) }, label = { Text("Text") })
+                    Spacer(Modifier.width(8.dp))
+                    FilterChip(selected = !asText, onClick = { switchTo(false) }, label = { Text("Hex") })
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        when {
+                            bytes == null -> why
+                            resized -> "${data.original.size} → ${bytes.size} B"
+                            asText -> "${bytes.size} B · ${charset.name()}"
+                            else -> "${bytes.size} B"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (bytes == null) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                // An item file is read by the modem at fixed offsets, so a
+                // changed length is worth saying out loud before it is written.
+                if (data.isItem && resized) {
+                    Text(
+                        "This item file was ${data.original.size} bytes and the modem may " +
+                                "expect exactly that many.",
+                        Modifier.padding(horizontal = 16.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                error?.let {
+                    Text(
+                        it,
+                        Modifier.padding(horizontal = 16.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+
+                OutlinedTextField(
+                    value = if (asText) text else hex,
+                    onValueChange = { v ->
+                        if (asText) text = v else hex = v
+                        error = null
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(12.dp),
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.None,
+                        keyboardType = if (asText) KeyboardType.Text else KeyboardType.Ascii,
+                    ),
+                )
+            }
+        }
+
+        if (confirmDiscard) {
+            AlertDialog(
+                onDismissRequest = { confirmDiscard = false },
+                title = { Text("Discard changes?") },
+                text = { Text("${data.path} has not been written to the modem.") },
+                confirmButton = {
+                    TextButton(onClick = { confirmDiscard = false; onDismiss() }) { Text("Discard") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmDiscard = false }) { Text("Keep editing") }
+                },
+            )
+        }
+    }
 }
 
 private fun hexDump(bytes: ByteArray, limit: Int = 8192): String = buildString {
