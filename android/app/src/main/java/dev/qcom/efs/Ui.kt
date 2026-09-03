@@ -446,7 +446,7 @@ private fun BrowserScreen(state: UiState, vm: MainViewModel) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun DetailSheet(
     detail: Detail,
@@ -482,7 +482,10 @@ private fun DetailSheet(
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
 
             if (!detail.entry.isDir) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     OutlinedButton(onClick = onPreview) {
                         Icon(Icons.Filled.Visibility, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
@@ -496,7 +499,10 @@ private fun DetailSheet(
                 }
             }
             if (!readOnly) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
                     if (!detail.entry.isDir && !detail.entry.isLink) {
                         OutlinedButton(onClick = onEdit) {
                             Icon(Icons.Filled.Edit, null, Modifier.size(18.dp))
