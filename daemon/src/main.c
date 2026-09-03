@@ -815,9 +815,11 @@ static int peer_uid_ok(int fd, uid_t want)
     return cred.uid == want;
 }
 
-static void serve(int cfd)
+/* Returns 1 when the client asked the daemon to shut down. */
+static int serve(int cfd)
 {
     sbuf line, out;
+    int bye = 0;
     sb_init(&line);
     sb_init(&out);
 
@@ -842,7 +844,7 @@ static void serve(int cfd)
                 if (w <= 0) goto done;
                 off += (size_t)w;
             }
-            int bye = strstr(out.p, "\"bye\":true") != NULL;
+            bye = strstr(out.p, "\"bye\":true") != NULL;
             sb_reset(&line);
             if (bye) goto done;
         }
@@ -850,6 +852,7 @@ static void serve(int cfd)
 done:
     sb_free(&line);
     sb_free(&out);
+    return bye;
 }
 
 int main(int argc, char **argv)
@@ -903,8 +906,14 @@ int main(int argc, char **argv)
             close(cfd);
             continue;
         }
-        serve(cfd);
+        int bye = serve(cfd);
         close(cfd);
+        /* "shutdown" means what it says: stop listening and leave, so that
+         * nothing keeps running as root after the client is done. */
+        if (bye) {
+            qlog("shutting down at the request of the client");
+            break;
+        }
     }
 
     if (g_open) diag_close(&g_diag);
