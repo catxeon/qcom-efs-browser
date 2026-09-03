@@ -35,10 +35,15 @@ DIAG_SUBSYS_CMD_F = 0x4B
 EFS_STD = 0x13
 EFS_ALT = 0x3E
 DIAG_BAD_CMD_F = 0x13
+DIAG_SPC_F = 0x41
+DIAG_BAD_SEC_MODE_F = 0x42
 NV_READ_F = 0x26
 NV_WRITE_F = 0x27
 
-USER_SPACE_DATA_TYPE = 0x20
+# Until the Service Programming Code is accepted, this modem refuses NV writes
+# the way a production one does: 0x42, the rejected command, the item, zeros.
+LOCKED_NV = 999
+CORRECT_SPC = b"000000"
 
 # Classic EFS2 numbering (libopenpst / EfsTools), verified on an SM8350 modem.
 HELLO, QUERY, OPEN, CLOSE, READ, WRITE = 0, 1, 2, 3, 4, 5
@@ -129,6 +134,7 @@ class Modem:
         self.images = {}      # handle -> (data, offset)
         self.next_handle = 1
         self.nv = {550: bytes([0xAA] * 128)}
+        self.unlocked = False
         self.log = log
         self.seen = []        # opcodes the daemon actually used
 
@@ -168,8 +174,19 @@ class Modem:
                 return bytes([NV_READ_F]) + struct.pack("<H", item) + bytes(128) + struct.pack("<H", 8)
             return bytes([NV_READ_F]) + struct.pack("<H", item) + data + struct.pack("<H", 0)
 
+        if pkt[0] == DIAG_SPC_F:
+            ok = pkt[1:7] == CORRECT_SPC
+            self.unlocked = self.unlocked or ok
+            self.seen.append(("spc", ok))
+            self.note("SPC %s" % ("accepted" if ok else "rejected"))
+            return bytes([DIAG_SPC_F, 1 if ok else 0])
+
         if pkt[0] == NV_WRITE_F:
             item = struct.unpack_from("<H", pkt, 1)[0]
+            if item == LOCKED_NV and not self.unlocked:
+                self.note("NV %d write refused: security" % item)
+                return (bytes([DIAG_BAD_SEC_MODE_F, NV_WRITE_F])
+                        + struct.pack("<H", item) + bytes(13))
             self.nv[item] = pkt[3:131]
             self.seen.append(("nv_write", item))
             return bytes([NV_WRITE_F]) + struct.pack("<H", item) + pkt[3:131] + struct.pack("<H", 0)

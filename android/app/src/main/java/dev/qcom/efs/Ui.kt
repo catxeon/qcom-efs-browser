@@ -778,6 +778,7 @@ private fun NvDialog(state: UiState, vm: MainViewModel, onDismiss: () -> Unit) {
     var item by remember { mutableStateOf("") }
     var index by remember { mutableStateOf("") }
     var payload by remember { mutableStateOf("") }
+    var spc by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -821,6 +822,30 @@ private fun NvDialog(state: UiState, vm: MainViewModel, onDismiss: () -> Unit) {
                 }
 
                 if (!state.readOnly) {
+                    HorizontalDivider()
+                    // Modems refuse NV writes until the Service Programming Code
+                    // is accepted; it raises the DIAG access level for the
+                    // session and does not itself change anything.
+                    Text(
+                        "The modem rejects NV writes until it is unlocked with the " +
+                                "Service Programming Code (often 000000).",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = spc,
+                            onValueChange = { spc = it.filter(Char::isDigit).take(6) },
+                            label = { Text("SPC") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Button(
+                            onClick = { vm.spcUnlock(spc) },
+                            enabled = spc.length == 6 && !state.busy,
+                        ) { Text("Unlock") }
+                    }
+
                     OutlinedTextField(
                         value = payload,
                         onValueChange = { payload = it },

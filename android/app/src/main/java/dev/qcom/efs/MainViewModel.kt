@@ -350,6 +350,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(toast = "NV item $item written") }
     }
 
+    fun spcUnlock(spc: String) = work("sending the SPC") {
+        val ok = repo.spcUnlock(spc)
+        _state.update {
+            it.copy(toast = if (ok) "SPC accepted - NV writes are unlocked"
+            else "SPC rejected - the modem did not accept that code")
+        }
+    }
+
     fun rawSend(hex: String, onResult: (String) -> Unit) = work("sending a raw DIAG packet") {
         onResult(repo.rawExchange(hex))
     }

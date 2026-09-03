@@ -13,6 +13,7 @@
 #define DIAG_SUBSYS_CMD_F  0x4B
 #define DIAG_NV_READ_F     0x26
 #define DIAG_NV_WRITE_F    0x27
+#define DIAG_SPC_F         0x41
 #define DIAG_SUBSYS_NV     0x30
 #define SUBSYS_NV_READ     0x01
 #define SUBSYS_NV_WRITE    0x02
@@ -40,6 +41,18 @@ static void eerr(efs_t *e, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(e->last_error, sizeof e->last_error, fmt, ap);
     va_end(ap);
+}
+
+/* Why an exchange produced nothing usable.  diag_xfer already knows -- a
+ * timeout, or a target that refused the command outright and said so -- and
+ * answering "short reply" to all of it throws that away.  Every call site
+ * that checks the length routes its message through here instead. */
+static const char *why_short(efs_t *e, int n)
+{
+    static char buf[288];
+    if (n < 0) snprintf(buf, sizeof buf, "%s", diag_error(e->d));
+    else snprintf(buf, sizeof buf, "short reply (%d bytes)", n);
+    return buf;
 }
 
 static void put_le16(uint8_t *p, uint16_t v) { p[0] = v & 0xFF; p[1] = v >> 8; }
@@ -137,7 +150,7 @@ int efs_opendir(efs_t *e, const char *path)
     memcpy(cmd + 4, path, plen);
 
     int n = diag_xfer(e->d, cmd, 4 + plen, resp, sizeof resp, e->timeout_ms);
-    if (n < 12) { eerr(e, "opendir '%s': no reply (%s)", path, diag_error(e->d)); return -1; }
+    if (n < 12) { eerr(e, "opendir '%s': %s", path, why_short(e, n)); return -1; }
 
     int32_t dirp = get_i32(resp + 4);
     e->last_errno = get_i32(resp + 8);
@@ -157,7 +170,7 @@ int efs_readdir(efs_t *e, int32_t dirp, uint32_t seqno, efs_dirent_t *ent)
     put_le32(cmd + 8, seqno);
 
     int n = diag_xfer(e->d, cmd, sizeof cmd, resp, sizeof resp, e->timeout_ms);
-    if (n < 40) { eerr(e, "readdir: short reply (%d bytes)", n); return -1; }
+    if (n < 40) { eerr(e, "readdir: %s", why_short(e, n)); return -1; }
 
     e->last_errno = get_i32(resp + 12);
     if (e->last_errno != 0) { eerr(e, "readdir: efs errno=%d", e->last_errno); return -1; }
@@ -210,7 +223,7 @@ int efs_stat(efs_t *e, const char *path, efs_stat_t *st)
     memcpy(cmd + 4, path, plen);
 
     int n = diag_xfer(e->d, cmd, 4 + plen, resp, sizeof resp, e->timeout_ms);
-    if (n < 32) { eerr(e, "stat '%s': short reply", path); return -1; }
+    if (n < 32) { eerr(e, "stat '%s': %s", path, why_short(e, n)); return -1; }
 
     e->last_errno = get_i32(resp + 4);
     if (e->last_errno != 0) { eerr(e, "stat '%s': efs errno=%d", path, e->last_errno); return -1; }
@@ -238,7 +251,7 @@ int efs_lstat(efs_t *e, const char *path, efs_stat_t *st)
     memcpy(cmd + 4, path, plen);
 
     int n = diag_xfer(e->d, cmd, 4 + plen, resp, sizeof resp, e->timeout_ms);
-    if (n < 32) { eerr(e, "lstat '%s': short reply", path); return -1; }
+    if (n < 32) { eerr(e, "lstat '%s': %s", path, why_short(e, n)); return -1; }
 
     e->last_errno = get_i32(resp + 4);
     if (e->last_errno != 0) { eerr(e, "lstat '%s': efs errno=%d", path, e->last_errno); return -1; }
@@ -264,7 +277,7 @@ int efs_statfs(efs_t *e, const char *path, uint8_t *raw, size_t rawsz, int *rawl
     memcpy(cmd + 4, path, plen);
 
     int n = diag_xfer(e->d, cmd, 4 + plen, resp, sizeof resp, e->timeout_ms);
-    if (n < 8) { eerr(e, "statfs: short reply"); return -1; }
+    if (n < 8) { eerr(e, "statfs: %s", why_short(e, n)); return -1; }
 
     e->last_errno = get_i32(resp + 4);
     if (e->last_errno != 0) { eerr(e, "statfs: efs errno=%d", e->last_errno); return -1; }
@@ -292,7 +305,7 @@ int efs_open(efs_t *e, const char *path, int32_t oflag, int32_t mode)
     memcpy(cmd + 12, path, plen);
 
     int n = diag_xfer(e->d, cmd, 12 + plen, resp, sizeof resp, e->timeout_ms);
-    if (n < 12) { eerr(e, "open '%s': short reply", path); return -1; }
+    if (n < 12) { eerr(e, "open '%s': %s", path, why_short(e, n)); return -1; }
 
     int32_t fd = get_i32(resp + 4);
     e->last_errno = get_i32(resp + 8);
@@ -317,7 +330,7 @@ int efs_read(efs_t *e, int32_t fd, uint32_t nbytes, uint32_t offset,
     put_le32(cmd + 12, offset);
 
     int n = diag_xfer(e->d, cmd, sizeof cmd, resp, sizeof resp, e->timeout_ms);
-    if (n < 20) { eerr(e, "read: short reply"); return -1; }
+    if (n < 20) { eerr(e, "read: %s", why_short(e, n)); return -1; }
 
     int32_t got = get_i32(resp + 12);
     e->last_errno = get_i32(resp + 16);
@@ -343,7 +356,7 @@ int efs_write(efs_t *e, int32_t fd, uint32_t offset, const uint8_t *data, uint32
     memcpy(cmd + 12, data, len);
 
     int n = diag_xfer(e->d, cmd, 12 + len, resp, sizeof resp, e->timeout_ms);
-    if (n < 20) { eerr(e, "write: short reply"); return -1; }
+    if (n < 20) { eerr(e, "write: %s", why_short(e, n)); return -1; }
 
     int32_t wrote = get_i32(resp + 12);
     e->last_errno = get_i32(resp + 16);
@@ -377,7 +390,7 @@ static int simple_path_cmd(efs_t *e, uint8_t op, const char *path, const char *w
     memcpy(cmd + 4, path, plen);
 
     int n = diag_xfer(e->d, cmd, 4 + plen, resp, sizeof resp, e->timeout_ms);
-    if (n < 8) { eerr(e, "%s '%s': short reply", what, path); return -1; }
+    if (n < 8) { eerr(e, "%s '%s': %s", what, path, why_short(e, n)); return -1; }
 
     e->last_errno = get_i32(resp + 4);
     if (e->last_errno != 0) {
@@ -401,7 +414,7 @@ static int mode_path_cmd(efs_t *e, uint8_t op, const char *path, int16_t mode,
     memcpy(cmd + 6, path, plen);
 
     int n = diag_xfer(e->d, cmd, 6 + plen, resp, sizeof resp, e->timeout_ms);
-    if (n < 8) { eerr(e, "%s '%s': short reply", what, path); return -1; }
+    if (n < 8) { eerr(e, "%s '%s': %s", what, path, why_short(e, n)); return -1; }
 
     e->last_errno = get_i32(resp + 4);
     if (e->last_errno == 0) return 0;
@@ -453,7 +466,7 @@ int efs_symlink(efs_t *e, const char *target, const char *linkpath)
     memcpy(cmd + 4 + tl, linkpath, ll);
 
     int n = diag_xfer(e->d, cmd, 4 + tl + ll, resp, sizeof resp, e->timeout_ms);
-    if (n < 8) { eerr(e, "symlink: short reply"); return -1; }
+    if (n < 8) { eerr(e, "symlink: %s", why_short(e, n)); return -1; }
 
     e->last_errno = get_i32(resp + 4);
     if (e->last_errno != 0) { eerr(e, "symlink failed, efs errno=%d", e->last_errno); return -1; }
@@ -474,7 +487,7 @@ int efs_rename(efs_t *e, const char *from, const char *to)
     memcpy(cmd + 4 + fl, to, tl);
 
     int n = diag_xfer(e->d, cmd, 4 + fl + tl, resp, sizeof resp, e->timeout_ms);
-    if (n < 8) { eerr(e, "rename: short reply"); return -1; }
+    if (n < 8) { eerr(e, "rename: %s", why_short(e, n)); return -1; }
 
     e->last_errno = get_i32(resp + 4);
     if (e->last_errno != 0) {
@@ -496,7 +509,7 @@ int efs_readlink(efs_t *e, const char *path, char *buf, size_t bufsz)
     memcpy(cmd + 4, path, plen);
 
     int n = diag_xfer(e->d, cmd, 4 + plen, resp, sizeof resp, e->timeout_ms);
-    if (n < 8) { eerr(e, "readlink: short reply"); return -1; }
+    if (n < 8) { eerr(e, "readlink: %s", why_short(e, n)); return -1; }
 
     e->last_errno = get_i32(resp + 4);
     if (e->last_errno != 0) { eerr(e, "readlink failed, efs errno=%d", e->last_errno); return -1; }
@@ -522,7 +535,7 @@ static int get_item_op(efs_t *e, uint8_t op, const char *path,
     memcpy(cmd + 4, path, plen);
 
     int n = diag_xfer(e->d, cmd, 4 + plen, resp, sizeof resp, e->timeout_ms);
-    if (n < 12) { eerr(e, "get item '%s': short reply", path); return -1; }
+    if (n < 12) { eerr(e, "get item '%s': %s", path, why_short(e, n)); return -1; }
 
     int32_t dlen = get_i32(resp + 4);
     e->last_errno = get_i32(resp + 8);
@@ -569,7 +582,7 @@ int efs_put_item(efs_t *e, const char *path, const uint8_t *data, int32_t len,
     memcpy(cmd + 14 + len, path, plen);
 
     int n = diag_xfer(e->d, cmd, 14 + (size_t)len + plen, resp, sizeof resp, e->timeout_ms);
-    if (n < 10) { eerr(e, "put item '%s': short reply", path); return -1; }
+    if (n < 10) { eerr(e, "put item '%s': %s", path, why_short(e, n)); return -1; }
 
     e->last_errno = (int16_t)get_le16(resp + 6);
     if (e->last_errno != 0) {
@@ -602,7 +615,7 @@ int efs_sync(efs_t *e)
     cmd[7] = 0;
 
     int n = diag_xfer(e->d, cmd, 8, resp, sizeof resp, e->timeout_ms);
-    if (n < 14) { eerr(e, "sync not supported"); return -1; }
+    if (n < 14) { eerr(e, "sync: %s", why_short(e, n)); return -1; }
 
     uint32_t token = get_le32(resp + 6);
     int32_t err = get_i32(resp + 10);
@@ -741,7 +754,7 @@ int efs_image_dump(efs_t *e, const char *efs_path, const char *local_path,
     memcpy(cmd + 7, efs_path, plen);
 
     int n = diag_xfer(e->d, cmd, 7 + plen, resp, sizeof resp, 15000);
-    if (n < 12) { eerr(e, "fs-image open: short reply"); return -1; }
+    if (n < 12) { eerr(e, "fs-image open: %s", why_short(e, n)); return -1; }
 
     int32_t handle = get_i32(resp + 4);
     e->last_errno = get_i32(resp + 8);
@@ -762,7 +775,7 @@ int efs_image_dump(efs_t *e, const char *efs_path, const char *local_path,
         put_le16(rd + 8, seq);
 
         n = diag_xfer(e->d, rd, sizeof rd, resp, sizeof resp, 15000);
-        if (n < 15) { eerr(e, "fs-image read: short reply at seq %u", seq); close(out); goto close_handle; }
+        if (n < 15) { eerr(e, "fs-image read at seq %u: %s", seq, why_short(e, n)); close(out); goto close_handle; }
 
         e->last_errno = get_i32(resp + 10);
         if (e->last_errno != 0) {
@@ -900,5 +913,21 @@ int nv_write_sub(diag_t *d, uint16_t item, uint16_t index, const uint8_t *data,
     if (n < (int)sizeof cmd || resp[0] != DIAG_SUBSYS_CMD_F) return -1;
 
     *status = get_le16(resp + 8 + NV_ITEM_DATA_SIZE);
+    return 0;
+}
+
+int diag_spc(diag_t *d, const char *spc, int *ok, int timeout_ms)
+{
+    uint8_t cmd[1 + 6], resp[32];
+
+    cmd[0] = DIAG_SPC_F;
+    memcpy(cmd + 1, spc, 6);          /* six ASCII digits, no terminator */
+
+    int n = diag_xfer(d, cmd, sizeof cmd, resp, sizeof resp, timeout_ms);
+    if (n < 2 || resp[0] != DIAG_SPC_F) return -1;
+
+    /* The answer is 0x41 followed by one byte: non-zero means the code was
+     * accepted and the security level is now raised. */
+    *ok = resp[1] != 0;
     return 0;
 }

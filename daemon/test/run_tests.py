@@ -377,6 +377,27 @@ def run(c, tmp):
     r = c.cmd(cmd="nv_read", item=550)
     check("nv value changed", r.get("data") == "00" * 128, r.get("data", "")[:16])
 
+    # A production modem refuses NV writes outright, with 0x42 rather than an
+    # NV status.  That has to surface as the refusal it is, not as a timeout.
+    r = c.cmd(cmd="nv_write", item=999, data="00" * 128)
+    check("a security-locked NV write says so", r.get("ok") is False, r)
+    check("and names the reason", "security" in r.get("error", ""), r.get("error"))
+
+    # A wrong SPC is reported as not unlocked, and the lock stays on.
+    r = c.cmd(cmd="spc", spc="123456")
+    check("a wrong SPC is rejected", r.get("ok") and r.get("unlocked") is False, r)
+    r = c.cmd(cmd="nv_write", item=999, data="00" * 128)
+    check("and the write is still refused", r.get("ok") is False, r)
+
+    # The right SPC raises the security level, and the write goes through.
+    r = c.cmd(cmd="spc", spc="000000")
+    check("the correct SPC unlocks", r.get("ok") and r.get("unlocked") is True, r)
+    r = c.cmd(cmd="nv_write", item=999, data="00" * 128)
+    check("the write now succeeds", r.get("ok") and r.get("status") == 0, r)
+
+    r = c.cmd(cmd="spc", spc="12")
+    check("a malformed SPC is rejected before it is sent", r.get("ok") is False, r)
+
     # ---- journal + raw ----
     r = c.cmd(cmd="sync")
     check("efs sync", r.get("ok"), r)

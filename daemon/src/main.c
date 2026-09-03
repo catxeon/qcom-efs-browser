@@ -617,7 +617,7 @@ static void cmd_nv_write(const char *req, sbuf *o)
         : nv_write(&g_diag, (uint16_t)item, data, sizeof data, &status, 4000);
 
     if (rc < 0) {
-        fail(o, "NV write for item %lld got no valid answer: %s", item, diag_error(&g_diag));
+        fail(o, "NV write for item %lld failed: %s", item, diag_error(&g_diag));
         return;
     }
     if (status != 0) {
@@ -628,6 +628,25 @@ static void cmd_nv_write(const char *req, sbuf *o)
     sb_fmt(o, "{\"ok\":true,\"item\":%lld,\"status\":0}", item);
 }
 
+static void cmd_spc(const char *req, sbuf *o)
+{
+    char spc[32];
+    if (json_get_str(req, "spc", spc, sizeof spc) < 0) {
+        fail(o, "missing 'spc' string field (six digits)");
+        return;
+    }
+    if (strlen(spc) != 6) { fail(o, "the SPC must be exactly six digits"); return; }
+    for (int i = 0; i < 6; i++)
+        if (spc[i] < '0' || spc[i] > '9') { fail(o, "the SPC must be six digits"); return; }
+
+    int ok = 0;
+    if (diag_spc(&g_diag, spc, &ok, 4000) < 0) {
+        fail(o, "SPC exchange failed: %s", diag_error(&g_diag));
+        return;
+    }
+    sb_fmt(o, "{\"ok\":true,\"unlocked\":%s}", ok ? "true" : "false");
+}
+
 static void cmd_raw(const char *req, sbuf *o)
 {
     char hex[8192];
@@ -636,12 +655,26 @@ static void cmd_raw(const char *req, sbuf *o)
     if (json_get_str(req, "hex", hex, sizeof hex) < 0) { fail(o, "missing 'hex' field"); return; }
     json_get_i64(req, "timeout", &timeout);
 
+    /* By default the answer has to match the request, the way every other
+     * command needs it to.  "match":false returns the first frame that
+     * arrives instead -- which is how you find out what a target answers
+     * when it answers with something unexpected. */
+    int match = 1;
+    json_get_bool(req, "match", &match);
+
     uint8_t pkt[DIAG_MAX_PKT];
     long n = hex_decode(hex, pkt, sizeof pkt);
     if (n <= 0) { fail(o, "'hex' is not a valid packet"); return; }
 
     uint8_t resp[DIAG_MAX_PKT];
-    int r = diag_xfer(&g_diag, pkt, (size_t)n, resp, sizeof resp, (int)timeout);
+    int r;
+    if (match) {
+        r = diag_xfer(&g_diag, pkt, (size_t)n, resp, sizeof resp, (int)timeout);
+    } else if (diag_send(&g_diag, pkt, (size_t)n) < 0) {
+        r = -1;
+    } else {
+        r = diag_recv(&g_diag, resp, sizeof resp, (int)timeout, -1, -1, -1);
+    }
     if (r < 0) { fail(o, "%s", diag_error(&g_diag)); return; }
 
     char *rhex = malloc((size_t)r * 2 + 2);
@@ -732,6 +765,7 @@ static void dispatch(const char *req, sbuf *o)
     if (!strcmp(cmd, "raw"))      { cmd_raw(req, o); return; }
     if (!strcmp(cmd, "write"))    { cmd_write(req, o); return; }
     if (!strcmp(cmd, "nv_write")) { cmd_nv_write(req, o); return; }
+    if (!strcmp(cmd, "spc"))      { cmd_spc(req, o); return; }
 
     if (!strcmp(cmd, "mkdir") || !strcmp(cmd, "rmdir") || !strcmp(cmd, "unlink") ||
         !strcmp(cmd, "rmtree") || !strcmp(cmd, "chmod")) {

@@ -226,6 +226,10 @@ class EfsRepository(private val ctx: Context) {
         }
     }
 
+    /** Sends the Service Programming Code; true when the modem accepts it. */
+    suspend fun spcUnlock(spc: String): Boolean =
+        client.cmd("spc") { put("spc", spc) }.optBoolean("unlocked")
+
     // ---- escape hatch --------------------------------------------------
 
     suspend fun rawExchange(hex: String): String =

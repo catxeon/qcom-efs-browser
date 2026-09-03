@@ -105,4 +105,11 @@ int  nv_write_sub(diag_t *d, uint16_t item, uint16_t index, const uint8_t *data,
                   size_t len, uint16_t *status, int timeout_ms);
 const char *nv_status_str(uint16_t status);
 
+/* Sends the 6-digit Service Programming Code (DIAG 0x41).  On the phones seen
+ * so far a modem answers NV writes with 0x42 ("security state does not allow
+ * it") until this has been accepted.  *ok is set to 1 when the target reports
+ * the code correct, 0 when it rejects it.  Returns 0 on a valid answer, -1 on
+ * a transport error.  spc must be exactly six ASCII digits. */
+int  diag_spc(diag_t *d, const char *spc, int *ok, int timeout_ms);
+
 #endif
