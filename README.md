@@ -1,178 +1,177 @@
-# Qualcomm EFS — Android-приложение для работы с EFS модема
+# Qualcomm EFS — an Android app for the modem's filesystem
 
-Браузер и редактор EFS2 (внутренней файловой системы Qualcomm-модема) для
-Android. Приложение состоит из двух частей:
+A browser and editor for EFS2, the internal filesystem of a Qualcomm modem,
+for Android. The app is two parts:
 
-* **`daemon/`** — маленький aarch64-хелпер `qcom-efsd`, который запускается от
-  root и говорит с модемом по DIAG (подсистема EFS2) — через `/dev/diag` или,
-  если такого узла нет, через QRTR. Наружу выставляет abstract unix socket
-  `@qcom_efsd` с построчным JSON-протоколом и проверкой `SO_PEERCRED`.
-* **`android/`** — само приложение (Kotlin, Jetpack Compose). Никогда не
-  работает с root-правами само: только шлёт команды хелперу.
+* **`daemon/`** — a small aarch64 helper, `qcom-efsd`, started as root, that
+  speaks DIAG (the EFS2 subsystem) to the modem over the QRTR bus. It exposes an
+  abstract unix socket `@qcom_efsd` with a line-delimited JSON protocol and an
+  `SO_PEERCRED` uid check.
+* **`android/`** — the app itself (Kotlin, Jetpack Compose). It never runs with
+  elevated privileges; it only sends commands to the helper.
 
-Схема повторяет `qcom-band-menu` (демон в assets → `su … setsid … -uid <uid>` →
-abstract socket → JSON), но транспорт другой: там QMI поверх QRTR, здесь DIAG,
-потому что доступа к файловой системе модема в QMI просто нет.
+The architecture mirrors `qcom-band-menu` (a helper in assets → `su … setsid …
+-uid <uid>` → an abstract socket → JSON), but the transport is different: that
+project is QMI over QRTR, this is DIAG, because QMI offers no access to the
+modem's filesystem.
 
 ---
 
-## Что умеет
+## What it does
 
-| Возможность | Как реализовано |
+| Capability | How |
 |---|---|
-| Просмотр дерева EFS | `EFS2_DIAG_OPENDIR/READDIR/CLOSEDIR` |
-| Метаданные, симлинки | `LSTAT` с откатом на `STAT` + `READLINK` |
-| Просмотр файла (текст/hex) | `OPEN/READ/CLOSE`, для item-файлов — `GET` |
-| Сохранение файла на телефон | чтение → кеш → SAF (`CreateDocument`) |
-| Загрузка/замена файла с выбором типа | обычный файл — `OPEN/WRITE/CLOSE`, item-файл — атомарный `PUT` |
-| `mkdir`, `chmod`, `rename`, `symlink`, удаление файла и дерева | `MKDIR`, `CHMOD`, `RENAME`, `SYMLINK`, `UNLINK`, `RMDIR` |
-| Бэкап поддерева tar-ом, который делает сам модем | `FS_IMAGE_OPEN/READ/CLOSE` (54–56) |
-| Бэкап поддерева пофайлово в zip | рекурсивный обход + zip на стороне приложения |
-| Чтение/запись NV-item | `0x26`/`0x27` и индексированные `0x4B 0x30 0x01/0x02` |
-| Сброс журнала EFS2 | `SYNC_NO_WAIT` / `SYNC_GET_STATUS` (48/49) |
-| Произвольный DIAG-пакет | команда `raw` (hex → hex) |
-| Диагностика | лог хелпера, статистика приёма, транспорт и вариант `SWITCH_LOGGING` |
-| Временный SELinux permissive | только если политика блокирует `/dev/diag`; возврат в enforcing гарантирован (см. ниже) |
+| Browse the EFS tree | `EFS2_DIAG_OPENDIR/READDIR/CLOSEDIR` |
+| Metadata, symlinks | `LSTAT` falling back to `STAT` + `READLINK` |
+| View a file (text/hex) | `OPEN/READ/CLOSE`; item files via `GET` |
+| Edit a file in place | built-in text editor for XML and the like, hex editor for item files; up to 64 KiB |
+| Save a file to the phone | read → cache → SAF (`CreateDocument`) |
+| Upload/replace a file, with a type choice | ordinary file — `OPEN/WRITE/CLOSE`; item file — atomic `PUT` |
+| `mkdir`, `chmod`, `rename`, `symlink`, delete file and tree | `MKDIR`, `CHMOD`, `RENAME`, `SYMLINK`, `UNLINK`, `RMDIR` |
+| Read/write NV items | `0x26`/`0x27` and the indexed `0x4B 0x30 0x01/0x02`; writes need SPC (below) |
+| Unlock NV writes | the Service Programming Code (`0x41`) raises the DIAG access level for the session |
+| Flush the EFS2 journal | `SYNC_NO_WAIT` / `SYNC_GET_STATUS` (48/49) |
+| Arbitrary DIAG packet | the `raw` command (hex → hex) |
+| Diagnostics | helper log, receive stats, the transport it found |
 
-Режим **read-only включён по умолчанию** — любые команды, меняющие модем,
-демон отклоняет, пока замок в тулбаре не снят вручную.
+**Read-only is on by default** — the helper refuses every command that would
+change the modem until the lock in the toolbar is cleared by hand.
 
 ---
 
-## Требования
+## Requirements
 
-* Root (Magisk/KernelSU). Хелпер запускается через `su`.
-* Доступ к модему по DIAG — одним из двух путей, хелпер выбирает сам:
-  * **`/dev/diag`** (драйвер `drivers/char/diag`). Если узел есть, но закрыт
-    политикой SELinux — приложение умеет временно снять enforcing (см. раздел
-    ниже).
-  * **QRTR**, сервис 4097. На аппаратах, где `diagchar` в ядро не собран
-    (в vendor-разделе при этом обычно работает `vendor.diag-router`), модем
-    публикует DIAG прямо в QRTR, и хелпер ходит туда. SELinux в этом случае
-    трогать не нужно вообще.
-
-  Если не работает ни то, ни другое — приложение честно покажет обе причины
-  в «Диагностике».
-* arm64. Хелпер собирается только под `aarch64` (32-битных Qualcomm-устройств
-  с актуальным EFS практически не осталось; при необходимости добавляется
-  вторым таргетом в `daemon/build.sh`).
+* Root (Magisk/KernelSU). The helper is started through `su`.
+* DIAG over **QRTR**, service 4097. Modern phones ship no `/dev/diag` character
+  device — the `diagchar` driver is not built into the kernel (the vendor
+  partition usually runs `vendor.diag-router` instead) — and the modem publishes
+  DIAG straight onto QRTR. Nothing to configure: the helper enumerates the bus
+  and finds the node itself. SELinux is not touched.
+* arm64. The helper builds for `aarch64` only (32-bit Qualcomm devices with a
+  current EFS are essentially gone; add a second target in `daemon/build.sh` if
+  you need one).
 * Android 8.0+ (minSdk 26).
 
 ---
 
-## Сборка
+## Build
 
-### В CI (проще всего)
+### In CI (easiest)
 
-`.github/workflows/build.yml` ставит NDK, собирает хелпер, кладёт его в
-`android/app/src/main/assets/` и собирает debug-APK. Артефакт — в разделе
+`.github/workflows/build.yml` installs the NDK, builds the helper, drops it into
+`android/app/src/main/assets/`, and builds the debug APK. The artifact is under
 Actions.
 
-### Локально
+### Locally
 
 ```bash
 export ANDROID_NDK_HOME=$HOME/Android/Sdk/ndk/27.2.12479018
-bash daemon/build.sh          # положит qcom-efsd в assets приложения
+bash daemon/build.sh          # drops qcom-efsd into the app's assets
 cd android && gradle assembleDebug
 ```
 
-Модуль `:app` сам вызовет `daemon/build.sh` перед сборкой, если задан
-`ANDROID_NDK_HOME`, а ассет отсутствует или старше исходников. В Android Studio
-достаточно открыть каталог `android/` (Gradle wrapper студия создаст сама).
+The `:app` module runs `daemon/build.sh` itself before packaging when
+`ANDROID_NDK_HOME` is set and the asset is missing or older than the sources. In
+Android Studio, just open the `android/` directory (Studio creates the Gradle
+wrapper).
 
-### Подписанная сборка релиза
+### Signed release build
 
-Gradle-конфигурация ключей не содержит — подпись делается отдельно, чтобы
-секретам негде было утечь в репозиторий:
+The Gradle config holds no keys — signing is done separately so nothing secret
+can leak into the repository:
 
 ```bash
 cd android && gradle assembleRelease
 BT=$ANDROID_HOME/build-tools/35.0.0
 $BT/zipalign -p -f 4 app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
-$BT/apksigner sign --ks <путь-к-хранилищу>.jks --ks-key-alias <алиас> --out qcom-efs-browser.apk aligned.apk
+$BT/apksigner sign --ks <keystore>.jks --ks-key-alias <alias> --out qcom-efs-browser.apk aligned.apk
 $BT/apksigner verify --print-certs qcom-efs-browser.apk
 ```
 
-При `minSdk 26` схемы v2/v3 достаточно, v1 (JAR) не нужна. Релизная сборка
-проходит через R8 и не имеет флага `debuggable`.
+At `minSdk 26` the v2/v3 schemes are enough; v1 (JAR) is not needed. The release
+build goes through R8 and carries no `debuggable` flag.
 
 ---
 
-## Протокол хелпера
+## Helper protocol
 
-Одна JSON-строка — один запрос, одна строка — ответ. Ответ всегда содержит
-`ok`; при ошибке — `error` и, для EFS-операций, `efs_errno`.
+One JSON object per line is a request; one line is the reply. Every reply
+carries `ok`; on failure it carries `error` and, for EFS operations,
+`efs_errno`.
 
 ```jsonc
-{"cmd":"open","permissive":"auto"}              // подключиться, найти EFS2
-                                                // permissive: auto | session | never
+{"cmd":"open"}                                  // connect, detect EFS2
 {"cmd":"ls","path":"/"}
 {"cmd":"stat","path":"/nv/item_files"}
 {"cmd":"read","path":"/policyman/carrier_policy.xml"}          // inline base64
-{"cmd":"read","path":"/big.bin","out":"/data/.../cache/x.bin"} // в файл
+{"cmd":"read","path":"/big.bin","out":"/data/.../cache/x.bin"} // to a file
 {"cmd":"write","path":"/foo","src":"/data/.../upload.bin","mode":420}
-{"cmd":"write","path":"/foo","data":"…","item":true}   // item-файл вместо обычного
+{"cmd":"write","path":"/foo","data":"…","item":true}   // an item file, not an ordinary one
 {"cmd":"mkdir","path":"/foo","mode":511}
 {"cmd":"unlink","path":"/foo/bar"}
 {"cmd":"rmtree","path":"/foo"}
 {"cmd":"chmod","path":"/foo","mode":420}
 {"cmd":"symlink","target":"/a","link":"/b"}
 {"cmd":"rename","from":"/a","to":"/b"}
-{"cmd":"stat","path":"/link","follow":true}   // атрибуты цели, а не ссылки
+{"cmd":"stat","path":"/link","follow":true}   // attributes of the target, not the link
 {"cmd":"pull_tree","path":"/","out":"/data/.../cache/tree","max_file":8388608}
 {"cmd":"image","path":"/","out":"/data/.../cache/efs.tar"}
 {"cmd":"nv_read","item":550}
 {"cmd":"nv_write","item":550,"data":"00ff…"}
+{"cmd":"spc","spc":"000000"}          // raise the DIAG access level; unlock NV writes
 {"cmd":"raw","hex":"4b1300000000"}
+{"cmd":"raw","hex":"…","match":false} // return the first frame that arrives, whatever it is
 {"cmd":"readonly","on":false}
-{"cmd":"selinux"}          // текущий режим + что хелпер с ним делал
-{"cmd":"selinux_restore"}  // немедленно вернуть enforcing
 {"cmd":"stats"} {"cmd":"close"} {"cmd":"shutdown"}
 ```
 
-Демон не стартует без `-uid <uid>` и обслуживает только соединения от этого
-uid, так что запущенный экземпляр нельзя перехватить другим приложением.
+The daemon refuses to start without `-uid <uid>` and serves only connections
+from that uid, so a running instance cannot be hijacked by another app.
 
 ---
 
-## Тесты
+## Tests
 
-Демон умеет работать не только с `/dev/diag`: параметр `-dev <path>` принимает
-путь к unix-сокету (`SOCK_SEQPACKET`), и тогда вместо символьного устройства
-используется он. На этом построен сквозной тест.
+`-mock <path>` makes the daemon talk to a unix socket (`SOCK_SEQPACKET`) that
+uses the same QRTR framing instead of the real bus. The end-to-end test is built
+on it.
 
 ```bash
-gcc -std=gnu11 -O2 -Wall -Wextra -o /tmp/qcom-efsd-host daemon/src/util.c daemon/src/selinux.c daemon/src/diag.c daemon/src/efs2.c daemon/src/main.c
+gcc -std=gnu11 -O2 -Wall -Wextra -o /tmp/qcom-efsd-host daemon/src/util.c daemon/src/diag.c daemon/src/efs2.c daemon/src/main.c
 python3 daemon/test/run_tests.py /tmp/qcom-efsd-host
 ```
 
-`daemon/test/mock_modem.py` — фальшивый модем: HDLC, EFS2 и NV поверх сокета,
-с деревом файлов в памяти. **Раскладки полей** транскрибированы из исходников
-qfenix — ответы собираются так, как их разбирает qfenix, а запросы разбираются
-так, как qfenix их собирает: перекрёстная проверка против реализации,
-работающей на живом железе. **Номера опкодов** — наоборот, классические
-(libopenpst/EfsTools), сверенные с живым SM8350, а не из qfenix.
+`daemon/test/mock_modem.py` is a fake modem: EFS2 and NV wrapped in QRTR frames
+over a socket, with an in-memory file tree. The packet *field layouts* are
+transcribed from qfenix's sources — responses are built the way qfenix parses
+them and requests are parsed the way qfenix builds them, cross-checking against
+an implementation known to work on real hardware. The *opcode numbers*, though,
+are the classic ones (libopenpst/EfsTools), verified against a live SM8350 — not
+qfenix's (see below).
 
-Мок повторял и ошибки qfenix, поэтому две вещи он пропустил, и обе всплыли
-только на аппарате: признак конца каталога и нумерация опкодов удаления.
-Обе теперь зашиты в мок, так что регрессия поймается.
+The mock reproduced qfenix's mistakes too, which is why two things slipped
+through and only turned up on hardware: the end-of-directory marker and the
+delete opcode numbering. Both are baked into the mock now, so a regression is
+caught.
 
-`daemon/test/run_tests.py` поднимает мок и демон и гоняет демон через тот же
-сокет и тот же JSON, что и приложение: листинг и типы записей, stat/readlink,
-чтение файла длиннее одного пакета, фолбэк на item-интерфейс, рекурсивный
-обход, tar от «модема», защита read-only, чанковая запись, PUT для item-файла,
-mkdir/chmod/symlink/rmtree, NV-item, sync, произвольный пакет.
+`daemon/test/run_tests.py` starts the mock and the daemon and drives the daemon
+over the same socket and the same JSON the app uses: listing and entry types,
+stat/readlink, reading a file longer than one packet, the item-file fallback,
+recursive pull, the "modem" tar, the read-only guard, chunked writes, `PUT` for
+an item file, mkdir/chmod/symlink/rmtree, NV items, sync, an arbitrary packet.
+It also checks both datagram shapes seen on hardware: run with datagram_header
+on, the mock prefixes every answer with the 4-byte header SM8850 adds, and the
+test confirms the session still comes up and the data arrives intact. A silent
+modem, a `shutdown` that must actually terminate the process, a security-locked
+NV write, and the SPC unlock are covered too.
 
-Чего тест не проверяет: доступность транспорта, варианты `SWITCH_LOGGING` и
-реальные ответы модема — только живой аппарат. SELinux-окно, наоборот,
-проверяется целиком: `-selinux-node <path>` подсовывает хелперу файл вместо
-`/sys/fs/selinux/enforce`, и тест убеждается, что enforcing возвращается и по
-команде, и по `SIGTERM`, и после `SIGKILL` (это делает deadman-потомок).
+What the test does not cover: the availability of the QRTR bus and the modem's
+real answers — only hardware. 75 end-to-end checks against the mock.
 
-### Отладка на живом аппарате без приложения
+### Debugging on a live device without the app
 
-Хелпер можно запустить руками и работать с ним с компьютера — сокет
-пробрасывается через adb:
+The helper can be run by hand and driven from a computer; the socket is
+forwarded over adb:
 
 ```bash
 adb push qcom-efsd /data/local/tmp/efsd
@@ -182,232 +181,219 @@ python3 daemon/tools/efsctl.py ls /
 python3 daemon/tools/efsctl.py cat /policyman/policies.xml
 ```
 
-`-uid 2000` — потому что через `adb forward` подключается adbd, то есть shell.
-Рядом лежат `tools/qrtr_probe.c` (список сервисов на шине QRTR) и
-`tools/qrtr_diag_probe.c` (перебор форматов DIAG-обмена) — ими и был найден
-транспорт на SM8350.
+`-uid 2000` because adbd (the shell) is what connects through `adb forward`.
+Alongside it are `tools/qrtr_probe.c` (the services on the QRTR bus) and
+`tools/qrtr_diag_probe.c` (a sweep of DIAG-exchange formats), which is how the
+transport was found on SM8350.
 
 ---
 
 ## SELinux
 
-На части прошивок политика запрещает домену `su`/`magisk` открывать
-`/dev/diag` — root есть, а устройство недоступно. Хелпер умеет обойти это,
-кратковременно переведя SELinux в permissive, но снимает enforcing **только
-когда это действительно нужно** и возвращает его обратно.
+The app **does not touch SELinux**. Enforcing is never lowered, the policy is
+never extended, and no file outside the app's own directories is written. The
+mode is read once at connect time, only to show it in Diagnostics.
 
-Порядок такой:
+An earlier version could briefly drop the system to permissive; that was for
+`/dev/diag`, which some firmware closes to the `su` domain. Together with
+`/dev/diag` itself, that machinery is gone — QRTR does not need it: the `su`
+domain of Magisk and KernelSU is unrestricted, and the `AF_QIPCRTR` socket opens
+under enforcing with no caveats. Verified on SM8350 and SM8850.
 
-1. Сначала обычная попытка `open("/dev/diag")` + настроечные `ioctl`. Если она
-   удалась — SELinux вообще не трогается.
-2. Если не удалась и разрешение получено (галочка в приложении → флаг
-   `-allow-permissive` у хелпера), запоминается текущее значение
-   `/sys/fs/selinux/enforce`, пишется `0`, попытка повторяется.
-3. Как только устройство открыто и ioctl-фаза завершена, enforcing
-   возвращается **сразу же**. Это безопасно: SELinux проверяет права на
-   `read`/`write` при открытии дескриптора и не перепроверяет их на каждой
-   операции, пока политика не перезагружалась.
-4. Если после возврата enforcing модем всё-таки не отвечает, хелпер один раз
-   повторяет обмен, удерживая permissive на время сессии. В этом случае в
-   интерфейсе висит красная плашка «SELinux is permissive» с кнопкой
-   немедленного возврата, а enforcing включается обратно при отключении.
-
-Возврат подстрахован в четыре слоя:
-
-* `se_restore()` на всех штатных путях — команда `close`, `shutdown`,
-  обрыв соединения с приложением, `atexit`;
-* обработчики фатальных сигналов (`SIGTERM`, `SIGSEGV`, `SIGABRT`, …);
-* **deadman-процесс**: при снижении enforcing хелпер форкает потомка, который
-  держит пайп к родителю и ничего больше не делает. Если родителя убили
-  `SIGKILL` (в том числе `pkill -9` из самого приложения) или он упал, пайп
-  закрывается, потомок просыпается и возвращает исходное значение. Это
-  единственный способ пережить `SIGKILL`, который перехватить нельзя;
-* приложение отдельно запоминает «долг» в `SharedPreferences`: если процесс
-  приложения убили целиком, при следующем запуске оно проверит режим и вернёт
-  enforcing само.
-
-Галочку можно снять — тогда хелпер запускается без `-allow-permissive` и не
-трогает политику ни при каких условиях.
-
-Более узкая альтернатива, если не хотите глобального permissive даже на
-секунду: разово выдать правило через Magisk —
-`magiskpolicy --live "allow magisk diag_device chr_file { open read write ioctl }"`.
-Оно действует до перезагрузки и не отключает enforcing глобально; после этого
-галочку permissive можно не включать.
+If some firmware does close this path too, the right fix is a narrow live rule,
+not a global permissive; with Magisk that is
+`magiskpolicy --live "allow magisk self qipcrtr_socket { create bind read write }"`
+(fill in the domain and class from the denial in `dmesg`/`logcat`). It lasts
+until reboot.
 
 ---
 
-## Как это устроено внутри
+## How it works inside
 
-**Два транспорта.** Хелпер сначала пробует `/dev/diag`, а если узла нет —
-перечисляет шину QRTR, находит сервис `4097` на чужом узле (это модем,
-инстанс 1 — его командная точка) и работает через него. Форматы разные:
-
-| | `/dev/diag` | QRTR |
-|---|---|---|
-| запрос | HDLC-кадр с CRC внутри контейнера драйвера | сырой пакет, одна датаграмма |
-| ответ | HDLC-кадры внутри контейнера | `7E 01 <len16> <payload> 7E`, без CRC |
-| настройка | `SWITCH_LOGGING`, буферизация, ioctl | ничего |
-| SELinux | может потребоваться permissive | не требуется |
-
-Проверено на ASUS I007D (SM8350, Android 11): `diagchar` в ядре отсутствует,
-DIAG доступен только по QRTR, EFS читается и пишется полностью.
-
-Что именно прогнано на этом аппарате: листинг и типы записей, `stat`/`readlink`,
-чтение файлов длиннее одного пакета, item-интерфейс, рекурсивный бэкап (188
-каталогов, 1270 файлов), `statfs`, `mkdir`, `chmod`, запись, `rename`,
-`symlink`, `unlink`, `rmdir`, `rmtree`, чтение NV-item (в том числе
-индексированное, по SIM) — и то же самое через интерфейс приложения: создание
-каталога, загрузка файла через системный выбор файлов, удаление файла,
-рекурсивное удаление каталога, NV-консоль. Каждая проверка обратима и
-сверяется отдельной сессией демона; после всех тестов корень EFS совпадал с
-исходным. Не проверялись: **запись** NV-item и весь путь `/dev/diag`
-(узла нет).
-
-**Транспорт `/dev/diag`.** Устройство переключается в `MEMORY_DEVICE_MODE` через
-`DIAG_IOCTL_SWITCH_LOGGING`. Структура аргумента этого ioctl менялась от версии
-к версии Android, поэтому её длина сначала определяется зондированием
-(аргумент подставляется всё ближе к неотображённой странице, пока ядро не
-перестанет отвечать `EFAULT`), а потом подбирается подходящий вариант — от
-24-байтного (Android 10+) до простого `int`.
-
-Формат обмена с драйвером:
+**Transport.** The helper enumerates the QRTR bus, finds service `4097` on a
+node other than its own (that is the modem; instance 1 is its command endpoint),
+and talks to it there. The request goes out as a single datagram with no
+framing; the answer comes back wrapped:
 
 ```
-запись:  [u32 USER_SPACE_DATA_TYPE] ([i32 -1] только для внешнего MDM) [HDLC-кадр]
-чтение:  [u32 USER_SPACE_DATA_TYPE] [u32 число сообщений]
-         N × ( ([i32 -1] для MDM) [u32 длина] [HDLC-кадр] )
+SM8350   7E 01 <len16> <payload> 7E
+SM8850   08 00 <len16 of the rest>   7E 01 <len16> <payload> 7E
 ```
 
-HDLC — как в DIAG: CRC-16 (полином 0x8408, инверсия), экранирование `0x7D`,
-завершающий `0x7E`.
+Targets newer than SM8350 add a further 4 bytes in front — `[u16 type = 8]` and
+`[u16 length of the rest of the datagram]`. The helper strips that header only
+when its length field accounts for exactly the rest of the datagram and the DIAG
+wrapper really follows, so a payload that happens to begin with those bytes is
+never mistaken for a header. There is no CRC and no escaping here — this is the
+QRTR wrapper, not HDLC.
 
-**EFS2.** Пакеты вида `[0x4B][subsys][cmd_lo][cmd_hi][тело]`. Подсистема
-определяется автоматически: сначала пробуется `0x3E` (Quectel/Foxconn), потом
-стандартная `0x13`.
+The transport needs no setup: no ioctls, no logging modes, no privileges beyond
+what root already has.
 
-Несколько неочевидных мест, из-за которых наивная реализация не работает:
+Verified on an ASUS I007D (SM8350, Android 11) and a Galaxy S26 Ultra (SM8850,
+Android 16). On both, `diagchar` is absent from the kernel; there is no
+`/dev/diag` at all, which is why that path was removed from the helper.
 
-* флаги `open` — **POSIX**, а не ARM-ABI: `O_CREAT = 0x40`. Со значением
-  `0x100` перезапись существующего файла проходит, а создание нового молча нет;
-* `mkdir`/`chmod` принимают `mode` как **int16**, а не int32;
-* `PUT` (38) кладёт данные со смещения **14**, а `errno` в ответе лежит по
-  смещению **6** и он тоже 16-битный; устаревший `PUT` (26) вешает часть
-  модемов, поэтому фолбэка на него нет;
-* item-файлы (`/nv/item_files/…`, `/nv/reg_files/…`) не видны обычному
-  `open`, читаются через `GET` (39, с фолбэком на 27) и создаются с
-  `O_ITEMFILE`; комбинация `O_ITEMFILE | O_AUTODIR` роняет часть модемов,
-  поэтому родительские каталоги создаются заранее;
-* EFS2 — журналируемая ФС: серия быстрых записей упирается в `ENOSPC`, даже
-  когда место есть. Лечится `SYNC` (пункт «Flush EFS journal»).
+Run on SM8350: listing and entry types, `stat`/`readlink`, reading files longer
+than one packet, the item interface, a recursive backup (188 directories, 1270
+files), `statfs`, `mkdir`, `chmod`, write, `rename`, `symlink`, `unlink`,
+`rmdir`, `rmtree`, NV-item reads (including indexed, per SIM) — and the same
+through the app's UI: create a directory, upload a file through the system file
+picker, delete a file, recursively delete a directory, the NV console. Each
+check is reversible and verified by a separate daemon session; after everything,
+the EFS root matched the original. On SM8850, all of the read paths plus the
+same reversible writes were run — including creating and deleting files,
+directories, item files, and a same-value NV write after the SPC — and again the
+root was unchanged.
 
-Ещё три вещи, найденные уже на живом аппарате:
+**NV-item writes need the SPC.** Until it is unlocked, the modem answers `0x27`
+with `42 27 <item16> 00…` — `DIAG_BAD_SEC_MODE_F`, "the current access level does
+not allow this command"; the indexed write `0x4B 0x30 0x02` is the same. This is
+not a helper defect: the command arrives, the modem understands it, and it
+refuses on access level.
 
-* **Конец каталога — это запись с пустым именем, а не `entry_type == 0`.**
-  qfenix останавливает перечисление по `entry_type == 0`, но на SM8350 ноль
-  означает «обычный файл» (каталог — 1, item-файл — 15). С этой проверкой
-  листинг корня обрывался на 8 записях из 40, на первом же файле.
-* **Хелпер нельзя линковать статически.** У статического бинаря NDK сегмент
-  TLS выровнен на 8 байт, а bionic в Android 11 и старше отказывается такой
-  запускать: `executable's TLS segment is underaligned`. Динамическая
-  линковка это снимает, заодно бинарь ужимается с 470 КБ до 45 КБ.
-* **Распаковку хелпера надо начинать с `unlink`.** Если предыдущий экземпляр
-  ещё выполняется из того же файла, перезапись падает с `ETXTBUSY`; удаление
-  же разрешено — старый процесс продолжает жить со старым inode.
-* `FS_IMAGE` (tar от модема) поддерживается не везде: SM8350 отвечает на
-  опкод 54 отказом, так что бэкап там делается пофайловым обходом.
-* **`LSTAT` (16) есть не у всех, а `STAT` переходит по симлинку** — как и
-  POSIX `stat()`. На SM8350 опкод 16 не реализован, поэтому ссылка выглядела
-  обычным файлом. Хелпер пробует `LSTAT`, откатывается на `STAT`, а затем
-  проверяет путь через `READLINK`: тот отвечает ошибкой на всём, что не
-  является ссылкой, так что успех однозначно опознаёт симлинк. В ответе
-  `stat` есть поле `stat_call` — видно, какой вызов сработал.
-* Разметку ответа `STATFS` модемы раскладывают по-разному, поэтому поля не
-  читаются по фиксированному смещению: хелпер ищет первую пару «размер блока
-  (степень двойки) + правдоподобное число блоков». Сырой ответ отдаётся
-  всегда.
+The level is raised with the **Service Programming Code** — command `0x41` with
+six ASCII digits (`000000` on most devices). The modem answers `41 01` on
+success and `41 00` on a wrong code; the raised level lasts for the session.
+This is the standard, Qualcomm-documented mechanism — the SPC changes nothing by
+itself, it only lifts the block on a subsequent write. In the app the NV console
+has an "SPC" field and an "Unlock" button; in the protocol it is the `spc`
+command. Verified on SM8350 and SM8850: `spc 000000` → `unlocked: true`, after
+which the `0x27` write goes through with status 0 (reversibly, writing back the
+same value that was read).
 
-Раскладки полей взяты из [qfenix](https://github.com/iamromulan/qfenix)
-(BSD-3-Clause) — там они добыты на реальных модемах; формат обмена с
-`/dev/diag` — из [QCSuper](https://github.com/P1sec/QCSuper) и
-MobileInsight `diag_revealer`. Код здесь написан заново.
+A `0x42` refusal used to look like a "timeout": `matches()` accepted only the
+codes `0x13`–`0x18` as answers, the `0x42` frame was discarded as unsolicited,
+and the call honestly waited four seconds before lying about the reason. Now
+`0x42` with an echo of the rejected command is recognised and turned into a
+readable error at once.
 
-**Но нумерацию опкодов у qfenix брать нельзя.** В его заголовке
-`7 = UNLINK, 8 = RMDIR, 14 = READLINK`, а на живом SM8350 действует
-классическая схема (как в libopenpst и EfsTools):
+**EFS2.** Packets are `[0x4B][subsys][cmd_lo][cmd_hi][body]`. The subsystem is
+detected automatically: `0x3E` (Quectel/Foxconn) is tried first, then the
+standard `0x13`.
+
+A few non-obvious things a naive implementation gets wrong:
+
+* the `open` flags are **POSIX**, not the ARM ABI: `O_CREAT = 0x40`. With
+  `0x100`, overwriting an existing file works but creating a new one silently
+  does not;
+* `mkdir`/`chmod` take `mode` as an **int16**, not int32;
+* `PUT` (38) puts the data at offset **14**, and the `errno` in the reply is at
+  offset **6** and is also 16-bit; the legacy `PUT` (26) hangs some modems, so
+  there is no fallback to it;
+* item files (`/nv/item_files/…`, `/nv/reg_files/…`) are invisible to a plain
+  `open`, are read through `GET` (39, falling back to 27) and created with
+  `O_ITEMFILE`; `O_ITEMFILE | O_AUTODIR` crashes some modems, so parent
+  directories are created up front;
+* EFS2 is journalled: a burst of quick writes hits `ENOSPC` even when there is
+  room. `SYNC` ("Flush EFS journal") clears it.
+
+Three more, found on hardware:
+
+* **The end of a directory is an entry with an empty name, not
+  `entry_type == 0`.** qfenix stops enumerating at `entry_type == 0`, but on
+  SM8350 zero means "regular file" (1 is a directory, 15 an item file). With
+  that check the root listing broke off at 8 of 40 entries, at the first file.
+* **The helper cannot be linked statically.** An NDK static binary gets a TLS
+  segment aligned to 8 bytes, which bionic on Android 11 and older refuses to
+  start (`executable's TLS segment is underaligned`). Dynamic linking avoids it
+  and shrinks the binary from 470 KB to 45 KB.
+* **Unpacking the helper has to start with `unlink`.** If the previous instance
+  is still executing from the same file, rewriting it fails with `ETXTBUSY`;
+  deleting it first is allowed — the old process keeps the old inode.
+* `FS_IMAGE` (a modem-side tar) is not supported everywhere: SM8350 and SM8850
+  both reject opcode 54, so the backup there is done by a file-by-file walk.
+* **`LSTAT` (16) is not on every modem, and `STAT` follows symlinks** — like
+  POSIX `stat()`. On SM8350 opcode 16 is unimplemented, so a link looked like a
+  regular file. The helper tries `LSTAT`, falls back to `STAT`, then probes the
+  path with `READLINK`, which errors on anything that is not a link, so a
+  success unambiguously identifies a symlink. The `stat` reply carries a
+  `stat_call` field showing which call answered.
+* Modems lay out the `STATFS` reply differently, so the fields are not read at a
+  fixed offset: the helper looks for the first "block size (a power of two) +
+  a plausible block count" pair. The raw reply is always returned as well.
+
+The field layouts come from [qfenix](https://github.com/iamromulan/qfenix)
+(BSD-3-Clause), where they were obtained on real modems. The code here is
+written from scratch.
+
+**But qfenix's opcode numbering must not be used.** Its header has
+`7 = UNLINK, 8 = RMDIR, 14 = READLINK`, whereas a live SM8350 uses the classic
+scheme (as in libopenpst and EfsTools):
 
 ```
 6 symlink   7 readlink   8 unlink   9 mkdir   10 rmdir   14 rename
 ```
 
-С нумерацией qfenix модем отвечает `EINVAL` на любое удаление — потому что 7
-это readlink, а readlink на обычном файле недопустим, — и, что гораздо хуже,
-«readlink» попадает в опкод 14, то есть в **RENAME**. Проверено экспериментом:
-после переключения на классические номера файл и каталог удалились с
+With qfenix's numbering the modem answers `EINVAL` to every delete — because 7
+is readlink, and readlink on an ordinary file is invalid — and, far worse, a
+"readlink" lands on opcode 14, which is **RENAME**. Confirmed by experiment:
+after switching to the classic numbers, a file and a directory deleted with
 `errno=0`.
 
 ---
 
-## Осторожно
+## Caution
 
-EFS хранит калибровку радиотракта, IMEI, ключи и провижининг. Удаление или
-порча файлов в `/nv/`, `/rfnv/`, `/policyman/` делает модем неработоспособным,
-а часть данных не восстанавливается без бэкапа от **этого конкретного**
-устройства.
+EFS holds radio calibration, the IMEI, keys and provisioning. Deleting or
+corrupting files under `/nv/`, `/rfnv/`, `/policyman/` makes the modem
+unusable, and some of that data cannot be recovered without a backup from
+**this specific** device.
 
-Разумный порядок работы: подключиться → сделать бэкап `/` обоими способами
-(tar от модема и пофайловый zip) → сохранить оба наружу → и только потом
-снимать замок read-only.
+A sensible order of work: connect → back up `/` both ways (the modem's tar and
+the file-by-file zip) → save both off the device → and only then clear the
+read-only lock.
 
-Приложение не пытается редактировать IMEI и не содержит никаких обходов
-блокировок оператора; это инструмент для просмотра, резервного копирования и
-восстановления собственной прошивки.
+The app makes no attempt to edit the IMEI and contains no carrier-lock bypass;
+it is a tool for viewing, backing up, and restoring your own firmware.
 
 ---
 
-## Структура
+## Structure
 
 ```
 daemon/
-  build.sh              сборка статического aarch64-бинаря через NDK
-  src/diag.c|h          транспорт: /dev/diag (ioctl-варианты, HDLC) и QRTR
-  src/efs2.c|h          EFS2-операции и NV-item
-  src/selinux.c|h       временный permissive + deadman-сторож
-  src/main.c            unix-сокет, JSON-протокол, рекурсивные операции
-  test/mock_modem.py    фальшивый модем: HDLC + EFS2 + NV поверх unix-сокета
-  test/run_tests.py     сквозной тест демона против мока
-  tools/qrtr_probe.c    список сервисов на шине QRTR
-  tools/qrtr_diag_probe.c  подбор формата DIAG-обмена по QRTR
-  tools/efsctl.py       клиент к демону через adb forward, без приложения
-  tools/write_test.py           обратимая проверка записи на живом модеме
-  tools/rename_symlink_test.py  то же для rename, symlink и readlink
-  tools/rmtree_test.py          то же для рекурсивного удаления
-  tools/nv_read_test.py         чтение NV-item (только чтение)
-  src/util.c|h          строковый буфер, JSON, base64/hex
+  build.sh              builds the aarch64 binary with the NDK
+  src/diag.c|h          transport: DIAG over QRTR
+  src/efs2.c|h          EFS2 operations and NV items
+  src/main.c            the unix socket, the JSON protocol, recursive operations
+  test/mock_modem.py    a fake modem: EFS2 + NV in QRTR frames over a socket
+  test/run_tests.py     the end-to-end test of the daemon against the mock
+  tools/qrtr_probe.c    the services on the QRTR bus
+  tools/qrtr_diag_probe.c  a sweep of DIAG-over-QRTR exchange formats
+  tools/efsctl.py       a client to the daemon over adb forward, without the app
+  tools/write_test.py           a reversible write check on a live modem
+  tools/rename_symlink_test.py  the same for rename, symlink and readlink
+  tools/rmtree_test.py          the same for recursive delete
+  tools/nv_read_test.py         reading NV items (read-only)
+  tools/nv_write_test.py        a reversible NV-item write check
+  src/util.c|h          string buffer, JSON, base64/hex
 android/
-  app/src/main/assets/qcom-efsd     (кладётся сборкой хелпера)
+  app/src/main/assets/qcom-efsd     (dropped in by the helper build)
   app/src/main/java/dev/qcom/efs/
-    RootDaemon.kt       распаковка и запуск через su
-    EfsClient.kt        клиент abstract-сокета
-    EfsRepository.kt    операции + SAF + zip
-    MainViewModel.kt    состояние экрана
-    Ui.kt               Compose-интерфейс
+    RootDaemon.kt       unpacks and starts the helper through su
+    EfsClient.kt        the abstract-socket client
+    EfsRepository.kt    operations + SAF + zip
+    MainViewModel.kt    screen state
+    Ui.kt               the Compose interface
 ```
 
-## Лицензия
+## License
 
-BSD 3-Clause — см. [LICENSE](LICENSE). Откуда взято знание о формате пакетов —
-в [NOTICE](NOTICE).
+BSD 3-Clause — see [LICENSE](LICENSE). Where the packet-format knowledge comes
+from is in [NOTICE](NOTICE).
 
-## Благодарности
+## Credits
 
-* [qfenix](https://github.com/iamromulan/qfenix) (BSD-3-Clause) — раскладки
-  полей EFS2/NV и несколько деталей, которые иначе пришлось бы искать на живом
-  железе: POSIX-флаги `open`, 16-битные поля `mode`, смещения в ответе `PUT`.
-  Нумерацию опкодов, наоборот, пришлось брать не оттуда — см. раздел выше.
-* [libopenpst](https://github.com/openpst/libopenpst) и EfsTools — классическая
-  нумерация опкодов EFS2, с которой и согласуется реальный модем.
-* [QCSuper](https://github.com/P1sec/QCSuper), MobileInsight `diag_revealer` —
-  формат контейнера `/dev/diag` и приём с зондированием длины аргумента
-  `DIAG_IOCTL_SWITCH_LOGGING`. Код не заимствован, подход воспроизведён заново.
-* `qcom-band-menu` — схема «root-демон + abstract socket + Compose-клиент».
+* [qfenix](https://github.com/iamromulan/qfenix) (BSD-3-Clause) — the EFS2/NV
+  field layouts and several details that would otherwise have to be found on
+  hardware: the POSIX `open` flags, the 16-bit `mode` fields, the offsets in the
+  `PUT` reply. The opcode numbering, on the other hand, had to come from
+  elsewhere — see above.
+* [libopenpst](https://github.com/openpst/libopenpst) and EfsTools — the classic
+  EFS2 opcode numbering, which is what shipping modems agree with.
+* [QCSuper](https://github.com/P1sec/QCSuper), MobileInsight's `diag_revealer` —
+  for documenting how DIAG works on Android. Their `/dev/diag` container framing
+  was reimplemented in earlier versions of the helper; that transport has since
+  been dropped in favour of DIAG over QRTR. No code was copied.
+* `qcom-band-menu` — the "root daemon + abstract socket + Compose client" shape.
