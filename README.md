@@ -396,4 +396,4 @@ from is in [NOTICE](NOTICE).
   for documenting how DIAG works on Android. Their `/dev/diag` container framing
   was reimplemented in earlier versions of the helper; that transport has since
   been dropped in favour of DIAG over QRTR. No code was copied.
-* `qcom-band-menu` — the "root daemon + abstract socket + Compose client" shape.
+* [Qualcomm QMI Band Control](https://github.com/Fronsipswu/qcom-band-menu) — the "root daemon + abstract socket + Compose client" shape.
