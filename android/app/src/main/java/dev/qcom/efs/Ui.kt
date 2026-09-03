@@ -1,6 +1,8 @@
 package dev.qcom.efs
 
+import android.app.Activity
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -9,8 +11,10 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -20,9 +24,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -68,6 +77,10 @@ fun App(vm: MainViewModel) {
         }
     }
 
+    val ctx = LocalContext.current
+    LaunchedEffect(state.exitAfterDisconnect) {
+        if (state.exitAfterDisconnect) (ctx as? Activity)?.finish()
+    }
     LaunchedEffect(state.pendingExport) {
         state.pendingExport?.let { exporter.launch(it.suggestedName) }
     }
@@ -310,6 +323,7 @@ private fun ConnectScreen(state: UiState, vm: MainViewModel) {
             Text("Verbose helper log")
         }
 
+
         Button(
             onClick = { vm.connect() },
             enabled = state.phase != Phase.CONNECTING,
@@ -332,6 +346,33 @@ private fun ConnectScreen(state: UiState, vm: MainViewModel) {
 
 @Composable
 private fun BrowserScreen(state: UiState, vm: MainViewModel) {
+    var confirmExit by remember { mutableStateOf(false) }
+
+    // The system back gesture walks up the tree, exactly like the arrow in the
+    // toolbar.  At the root there is nowhere left to go, so it offers the exit
+    // -- which closes the session rather than leaving the helper behind.
+    BackHandler { if (state.path != "/") vm.up() else confirmExit = true }
+
+    if (confirmExit) {
+        AlertDialog(
+            onDismissRequest = { confirmExit = false },
+            title = { Text("Leave the app?") },
+            text = { Text("The modem session is closed and the root helper is stopped.") },
+            confirmButton = {
+                TextButton(onClick = { confirmExit = false; vm.disconnectAndExit() }) { Text("Exit") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmExit = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    // A new directory is shown from its first entry, not at whatever offset the
+    // previous one happened to be scrolled to.  Re-reading the same path (the
+    // refresh button, a delete) keeps the position, since the key is unchanged.
+    val listState = rememberLazyListState()
+    LaunchedEffect(state.path) { listState.scrollToItem(0) }
+
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -362,7 +403,7 @@ private fun BrowserScreen(state: UiState, vm: MainViewModel) {
             return@Column
         }
 
-        LazyColumn(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize(), state = listState) {
             items(state.entries, key = { it.name }) { entry ->
                 ListItem(
                     headlineContent = { Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },

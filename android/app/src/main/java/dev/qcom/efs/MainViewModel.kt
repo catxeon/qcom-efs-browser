@@ -41,6 +41,8 @@ data class UiState(
     val pendingExport: PendingExport? = null,
     val nv: NvResult? = null,
     val nvError: String? = null,
+    /** Set once the session is closed and the activity should finish. */
+    val exitAfterDisconnect: Boolean = false,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -112,6 +114,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 verbose = it.verbose,
                 localEnforce = it.localEnforce,
                 log = it.log,
+            )
+        }
+    }
+
+    /**
+     * Leaving by the back gesture: close the session first, then let the
+     * activity finish.  Without this the helper would keep running as root
+     * after the app is gone, until the next launch kills it.
+     */
+    fun disconnectAndExit() = work("disconnecting") {
+        repo.disconnect()
+        _state.update {
+            UiState(
+                verbose = it.verbose,
+                localEnforce = it.localEnforce,
+                log = it.log,
+                exitAfterDisconnect = true,
             )
         }
     }
