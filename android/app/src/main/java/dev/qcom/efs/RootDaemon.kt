@@ -11,23 +11,18 @@ import java.io.InputStreamReader
 /**
  * Extracts the bundled aarch64 helper and starts it as root.
  *
- * The daemon is the only part of the app that touches /dev/diag; the app
- * itself never runs with elevated privileges and only speaks to the daemon
+ * The helper is the only part of the app that talks to the modem; the app
+ * itself never runs with elevated privileges and only speaks to the helper
  * over an abstract unix socket that is bound to this app's uid.
  *
- * The helper may briefly drop SELinux to permissive when the policy blocks
- * /dev/diag, and puts it back itself.  Everything here is the belt to that
- * pair of braces: we remember what the mode was before we started, and we
- * restore it after killing the helper or after an app crash.
+ * Nothing here changes the system in any way: no file outside the app's own
+ * directories is written, and the SELinux mode is read once for the log and
+ * otherwise left alone.
  */
 object RootDaemon {
 
     const val SOCKET_NAME = "qcom_efsd"
     private const val ASSET_NAME = "qcom-efsd"
-    private const val PREFS = "qcom-efs"
-    private const val KEY_RESTORE_TO = "selinux_restore_to"
-
-    private val ENFORCE_NODES = listOf("/sys/fs/selinux/enforce", "/selinux/enforce")
 
     class Report(
         val ok: Boolean,
@@ -39,70 +34,6 @@ object RootDaemon {
 
     fun logFile(ctx: Context): File = File(ctx.cacheDir, "qcom-efsd.log")
 
-    // ---- SELinux bookkeeping -------------------------------------------
-
-    /**
-     * 1 = enforcing, 0 = permissive, null = unknown.
-     *
-     * Reads the node directly, which usually fails from an app uid -- the
-     * policy rarely lets untrusted_app touch selinuxfs.  The authoritative
-     * value comes from the root shell in [start] and from the helper.
-     */
-    fun enforceState(): Int? {
-        for (path in ENFORCE_NODES) {
-            val f = File(path)
-            if (!f.exists()) continue
-            val text = runCatching { f.readText().trim() }.getOrNull() ?: continue
-            return text.firstOrNull()?.let { if (it == '1') 1 else 0 }
-        }
-        return null
-    }
-
-    private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-
-    /** Records that something must be put back if we die before doing it. */
-    fun noteOutstandingRestore(ctx: Context, restoreTo: Int?) {
-        val p = prefs(ctx).edit()
-        if (restoreTo == null) p.remove(KEY_RESTORE_TO) else p.putInt(KEY_RESTORE_TO, restoreTo)
-        p.apply()
-    }
-
-    fun outstandingRestore(ctx: Context): Int? =
-        prefs(ctx).getInt(KEY_RESTORE_TO, -1).takeIf { it >= 0 }
-
-    /**
-     * Called at app start: if a previous run left SELinux lowered - the app was
-     * force-stopped, or the helper was SIGKILLed before its own guard ran -
-     * put the mode back now.
-     */
-    suspend fun recoverSelinux(ctx: Context): String? = withContext(Dispatchers.IO) {
-        val want = outstandingRestore(ctx) ?: return@withContext null
-        val now = enforceState()
-        if (now == want) {
-            noteOutstandingRestore(ctx, null)
-            return@withContext null
-        }
-        val ok = runCatching { setEnforce(want) }.getOrDefault(false)
-        if (ok) noteOutstandingRestore(ctx, null)
-        "SELinux was left at ${modeName(now)} by a previous run; " +
-                (if (ok) "restored to ${modeName(want)}." else "could NOT restore it - check root access.")
-    }
-
-    /**
-     * Writes the enforce node through the root shell.  Probing for the file
-     * from the app process is useless -- the policy usually hides selinuxfs
-     * from an app uid -- so both known paths are tried inside the shell.
-     */
-    private fun setEnforce(value: Int): Boolean {
-        val script = buildString {
-            for (node in ENFORCE_NODES) appendLine("[ -e '$node' ] && echo $value > '$node'")
-            appendLine("echo \"SE=$(cat ${ENFORCE_NODES[0]} 2>/dev/null)\"")
-            appendLine("exit")
-        }
-        val out = runSu(script, mutableListOf())
-        return out.any { it.startsWith("SE=") && it.removePrefix("SE=").trim() == value.toString() }
-    }
-
     fun modeName(v: Int?): String = when (v) {
         1 -> "enforcing"
         0 -> "permissive"
@@ -111,7 +42,7 @@ object RootDaemon {
 
     // ---- lifecycle ------------------------------------------------------
 
-    suspend fun start(ctx: Context, verbose: Boolean, allowPermissive: Boolean): Report =
+    suspend fun start(ctx: Context, verbose: Boolean): Report =
         withContext(Dispatchers.IO) {
             val log = mutableListOf<String>()
 
@@ -142,7 +73,6 @@ object RootDaemon {
                 appendLine("rm -f '$logPath' 2>/dev/null")
                 append("setsid '${binary.absolutePath}' -uid $uid")
                 if (verbose) append(" -verbose")
-                if (allowPermissive) append(" -allow-permissive")
                 appendLine(" </dev/null >>'$logPath' 2>&1 &")
                 appendLine("sleep 1")
                 appendLine("chmod 644 '$logPath' 2>/dev/null")
@@ -164,7 +94,7 @@ object RootDaemon {
                 ?.removePrefix("SE=")?.trim()
                 ?.let { if (it == "1") 1 else if (it == "0") 0 else null }
 
-            if (enforce != null) log += "SELinux is ${modeName(enforce)} before starting the helper"
+            if (enforce != null) log += "SELinux is ${modeName(enforce)}, and stays that way"
 
             if (rootUid != "0") {
                 return@withContext Report(
@@ -179,20 +109,8 @@ object RootDaemon {
             Report(true, log, null, enforce)
         }
 
-    /**
-     * Kills the helper.  SIGKILL gives the helper's own guards no chance to
-     * run, so its SELinux deadman child does that - and we make sure here too.
-     */
-    suspend fun stop(ctx: Context) = withContext(Dispatchers.IO) {
-        val want = outstandingRestore(ctx)
+    suspend fun stop() = withContext(Dispatchers.IO) {
         runCatching { runSu("pkill -9 -f $ASSET_NAME\nexit\n", mutableListOf()) }
-
-        if (want != null) {
-            // Give the deadman a moment, then check for ourselves.
-            Thread.sleep(200)
-            if (enforceState() != want) runCatching { setEnforce(want) }
-            noteOutstandingRestore(ctx, null)
-        }
         Unit
     }
 

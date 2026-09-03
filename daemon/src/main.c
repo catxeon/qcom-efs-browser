@@ -11,7 +11,6 @@
  */
 #include "diag.h"
 #include "efs2.h"
-#include "selinux.h"
 #include "util.h"
 
 #include <errno.h>
@@ -38,9 +37,6 @@ static diag_t g_diag;
 static efs_t  g_efs;
 static int    g_open = 0;
 static int    g_readonly = 1;
-static int    g_allow_permissive = 0;  /* set with -allow-permissive */
-static int    g_se_used = 0;           /* we lowered SELinux this session */
-static int    g_se_held = 0;           /* ... and it is still lowered      */
 
 /* ---- small helpers ---------------------------------------------------- */
 
@@ -349,102 +345,28 @@ static int get_path(const char *req, sbuf *o, char *path, size_t n)
     return 0;
 }
 
-/* Appends the ",\"selinux\":{...}" block; the caller has already opened the
- * object and written at least one field. */
-static void se_report(sbuf *o)
+static void cmd_open(sbuf *o)
 {
-    const char *node = se_node();
-    sb_fmt(o, ",\"selinux\":{\"available\":%s,\"allowed\":%s,\"enforce_now\":%d,"
-              "\"was_enforcing\":%d,\"used_permissive\":%s,\"held\":%s}",
-           node ? "true" : "false",
-           g_allow_permissive ? "true" : "false",
-           se_get_enforce(), se_original(),
-           g_se_used ? "true" : "false",
-           g_se_held ? "true" : "false");
-}
-
-static void release_permissive(void)
-{
-    se_restore();          /* idempotent, also stands the deadman down */
-    g_se_held = 0;
-}
-
-static void cmd_open(const char *req, sbuf *o)
-{
-    long long mdm = 0;
-    char policy[16] = "auto";      /* auto | session | never */
-
-    json_get_i64(req, "mdm", &mdm);
-    json_get_str(req, "permissive", policy, sizeof policy);
-
-    int may_lower = g_allow_permissive && strcmp(policy, "never") != 0;
-    int want_hold = strcmp(policy, "session") == 0;
-
     if (g_open) { diag_close(&g_diag); g_open = 0; }
-    release_permissive();
-    g_se_used = 0;
 
-    if (diag_open(&g_diag, (int)mdm) < 0) {
-        char first[256];
-        snprintf(first, sizeof first, "%s", diag_error(&g_diag));
+    if (diag_open(&g_diag) < 0) {
+        fail(o, "%s", diag_error(&g_diag));
         diag_close(&g_diag);
-
-        if (!may_lower) { fail(o, "%s", first); return; }
-
-        int lo = se_lower();
-        if (lo < 0) {
-            fail(o, "%s; SELinux could not be lowered either: %s", first, se_last_error());
-            return;
-        }
-        g_se_used = (lo == 0);
-        g_se_held = (lo == 0);
-
-        if (diag_open(&g_diag, (int)mdm) < 0) {
-            char why[256];
-            snprintf(why, sizeof why, "%s", diag_error(&g_diag));
-            release_permissive();
-            diag_close(&g_diag);
-            fail(o, "%s (this was with SELinux permissive, so the policy is not the obstacle)", why);
-            return;
-        }
-
-        /* The device is open and the setup ioctls are done.  Reads and writes
-         * on an already-open descriptor are not re-checked against the policy,
-         * so put enforcing back immediately unless a hold was requested. */
-        if (!want_hold) release_permissive();
+        return;
     }
 
     efs_init(&g_efs, &g_diag);
 
     if (efs_detect(&g_efs) < 0) {
-        char why[256];
-        snprintf(why, sizeof why, "%s", g_efs.last_error);
-
-        /* The device opened but the modem never answered.  If we have not
-         * tried permissive yet, hold it down and give it one more go. */
-        int retried = 0;
-        if (may_lower && !g_se_held && se_lower() == 0) {
-            g_se_used = 1;
-            g_se_held = 1;
-            retried = 1;
-            qlog("retrying EFS detection with SELinux held permissive");
-        }
-        if (!retried || efs_detect(&g_efs) < 0) {
-            if (retried) snprintf(why, sizeof why, "%s", g_efs.last_error);
-            release_permissive();
-            diag_close(&g_diag);
-            fail(o, "%s", why);
-            return;
-        }
+        fail(o, "%s", g_efs.last_error);
+        diag_close(&g_diag);
+        return;
     }
     g_open = 1;
 
-    sb_fmt(o, "{\"ok\":true,\"transport\":\"%s\",\"subsys\":%d,"
-              "\"logging_variant\":%d,\"peripheral_mask\":%u,\"readonly\":%s",
-           diag_transport_desc(&g_diag), g_efs.method, g_diag.logging_variant,
-           g_diag.peripheral_mask, g_readonly ? "true" : "false");
-    se_report(o);
-    sb_str(o, "}");
+    sb_fmt(o, "{\"ok\":true,\"transport\":\"%s\",\"subsys\":%d,\"readonly\":%s}",
+           diag_transport_desc(&g_diag), g_efs.method,
+           g_readonly ? "true" : "false");
 }
 
 static void cmd_read(const char *req, sbuf *o)
@@ -750,30 +672,21 @@ static void dispatch(const char *req, sbuf *o)
         sb_fmt(o, "{\"ok\":true,\"readonly\":%s}", g_readonly ? "true" : "false");
         return;
     }
-    if (!strcmp(cmd, "open"))  { cmd_open(req, o); return; }
+    if (!strcmp(cmd, "open"))  { cmd_open(o); return; }
     if (!strcmp(cmd, "close")) {
         if (g_open) { diag_close(&g_diag); g_open = 0; }
-        release_permissive();
         sb_str(o, "{\"ok\":true}");
         return;
     }
-    if (!strcmp(cmd, "selinux") || !strcmp(cmd, "selinux_restore")) {
-        if (!strcmp(cmd, "selinux_restore")) release_permissive();
-        sb_str(o, "{\"ok\":true");
-        se_report(o);
-        sb_str(o, "}");
-        return;
-    }
     if (!strcmp(cmd, "stats")) {
-        sb_fmt(o, "{\"ok\":true,\"rx_frames\":%lu,\"rx_dropped\":%lu,\"crc_errors\":%lu,"
-                  "\"subsys\":%d,\"logging_variant\":%d}",
-               g_diag.rx_frames, g_diag.rx_dropped, g_diag.crc_errors,
-               g_efs.method, g_diag.logging_variant);
+        sb_fmt(o, "{\"ok\":true,\"rx_frames\":%lu,\"rx_dropped\":%lu,"
+                  "\"transport\":\"%s\",\"subsys\":%d}",
+               g_diag.rx_frames, g_diag.rx_dropped,
+               diag_transport_desc(&g_diag), g_efs.method);
         return;
     }
     if (!strcmp(cmd, "shutdown")) {
         if (g_open) { diag_close(&g_diag); g_open = 0; }
-        release_permissive();
         sb_str(o, "{\"ok\":true,\"bye\":true}");
         return;
     }
@@ -949,9 +862,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-socket") && i + 1 < argc)  sockname = argv[++i];
         else if (!strcmp(argv[i], "-verbose"))                 g_verbose = 1;
         else if (!strcmp(argv[i], "-rw"))                      g_readonly = 0;
-        else if (!strcmp(argv[i], "-allow-permissive"))        g_allow_permissive = 1;
-        else if (!strcmp(argv[i], "-dev") && i + 1 < argc)     diag_set_device(argv[++i]);
-        else if (!strcmp(argv[i], "-selinux-node") && i + 1 < argc) se_set_node(argv[++i]);
+        else if (!strcmp(argv[i], "-mock") && i + 1 < argc)    diag_set_mock(argv[++i]);
         else if (!strcmp(argv[i], "-qrtr") && i + 1 < argc) {
             unsigned long node = 0, port = 0;
             if (sscanf(argv[++i], "%lu:%lu", &node, &port) == 2)
@@ -970,8 +881,6 @@ int main(int argc, char **argv)
     }
 
     signal(SIGPIPE, SIG_IGN);
-    signal(SIGCHLD, SIG_IGN);   /* the SELinux deadman reaps itself */
-    se_install_guards();
 
     int sfd = listen_abstract(sockname);
     if (sfd < 0) {
@@ -996,12 +905,9 @@ int main(int argc, char **argv)
         }
         serve(cfd);
         close(cfd);
-        /* The client is gone: never leave the policy lowered behind it. */
-        release_permissive();
     }
 
     if (g_open) diag_close(&g_diag);
-    release_permissive();
     close(sfd);
     return 0;
 }

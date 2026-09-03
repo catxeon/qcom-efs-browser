@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 """A fake Qualcomm modem that speaks DIAG/EFS2 over a unix socket.
 
-The daemon normally talks to /dev/diag; with `-dev <path>` it connects to a
-SOCK_SEQPACKET socket instead, which is what this script serves.
+The daemon normally talks to the DIAG service on the QRTR bus; with
+`-mock <path>` it connects to a SOCK_SEQPACKET socket instead, which is what
+this script serves.  The framing is the one the modem uses on QRTR: the
+request arrives as a bare payload and the answer is wrapped in
+
+    7E 01 <len16> <payload> 7E
+
+optionally preceded, as on SM8850 and newer, by a datagram header
+
+    [u16 type = 8][u16 length of the rest]
+
+which the fourth argument turns on.
 
 The packet *layouts* are transcribed from qfenix's diag.c -- responses are
 built the way qfenix parses them and requests are parsed the way qfenix builds
@@ -45,48 +55,14 @@ S_IFDIR, S_IFREG, S_IFLNK, S_IFITM = 0o040000, 0o100000, 0o120000, 0o160000
 ENOENT, EACCES, EEXIST, ENOTDIR, EPERM, ENOTEMPTY = 2, 13, 17, 20, 1, 39
 
 
-# ---------------------------------------------------------------- HDLC ----
-
-def crc16(data, iv=0xFFFF):
-    crc = iv
-    for b in data:
-        crc ^= b
-        for _ in range(8):
-            crc = (crc >> 1) ^ 0x8408 if crc & 1 else crc >> 1
-    return crc
+# ------------------------------------------------------------- framing ----
 
 
-def hdlc_encode(payload):
-    crc = crc16(payload) ^ 0xFFFF
-    body = payload + struct.pack("<H", crc)
-    out = bytearray()
-    for b in body:
-        if b in (0x7E, 0x7D):
-            out += bytes([0x7D, b ^ 0x20])
-        else:
-            out.append(b)
-    out.append(0x7E)
-    return bytes(out)
-
-
-def hdlc_decode(frame):
-    out = bytearray()
-    i = 0
-    while i < len(frame):
-        b = frame[i]
-        if b == 0x7E:
-            i += 1
-            continue
-        if b == 0x7D:
-            i += 1
-            b = frame[i] ^ 0x20
-        out.append(b)
-        i += 1
-    if len(out) < 3:
-        raise ValueError("frame too short")
-    if crc16(bytes(out)) != 0xF0B8:
-        raise ValueError("bad CRC")
-    return bytes(out[:-2])
+def wrap(payload, datagram_header=False):
+    frame = b"\x7e\x01" + struct.pack("<H", len(payload)) + payload + b"\x7e"
+    if datagram_header:
+        frame = struct.pack("<HH", 8, len(frame)) + frame
+    return frame
 
 
 # ------------------------------------------------------------ fake EFS ----
@@ -532,7 +508,7 @@ class Modem:
 
 # --------------------------------------------------------------- server ----
 
-def serve(path, logpath, reject_hellos=0):
+def serve(path, logpath, reject_hellos=0, datagram_header=False):
     if os.path.exists(path):
         os.unlink(path)
 
@@ -557,32 +533,18 @@ def serve(path, logpath, reject_hellos=0):
             break
         if not blob:
             break
-        if len(blob) < 4:
-            continue
 
-        dtype = struct.unpack_from("<I", blob, 0)[0]
-        if dtype != USER_SPACE_DATA_TYPE:
-            log.write("unexpected data type 0x%x\n" % dtype)
-            continue
-
-        try:
-            payload = hdlc_decode(blob[4:])
-        except ValueError as exc:
-            log.write("bad frame: %s\n" % exc)
-            continue
-
-        reply = modem.handle(payload)
+        reply = modem.handle(blob)
         if reply is None:
             continue
 
-        frame = hdlc_encode(reply)
-        container = struct.pack("<II", USER_SPACE_DATA_TYPE, 1)
-        container += struct.pack("<I", len(frame)) + frame
-        conn.send(container)
+        conn.send(wrap(reply, datagram_header))
 
     log.write("connection closed; ops seen: %d\n" % len(modem.seen))
     log.flush()
 
 
 if __name__ == "__main__":
-    serve(sys.argv[1], sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 0)
+    serve(sys.argv[1], sys.argv[2],
+          int(sys.argv[3]) if len(sys.argv) > 3 else 0,
+          len(sys.argv) > 4 and sys.argv[4] == "1")

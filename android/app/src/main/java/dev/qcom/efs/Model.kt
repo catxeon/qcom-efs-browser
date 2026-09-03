@@ -59,47 +59,10 @@ data class EfsStat(
 data class DaemonInfo(
     val version: String,
     val subsys: Int,
-    val loggingVariant: Int,
-    val peripheralMask: Int,
+    /** How the helper reached the modem, e.g. "qrtr 0:25". */
+    val transport: String,
     val readOnly: Boolean,
-    val selinux: SelinuxState,
 )
-
-/**
- * What the helper did to SELinux, as reported with every `open` and by the
- * `selinux` command.  `held` means the policy is permissive right now because
- * of us and will stay that way until the session ends.
- */
-data class SelinuxState(
-    val available: Boolean,
-    val allowed: Boolean,
-    val enforceNow: Int,      // 1 enforcing, 0 permissive, -1 unknown
-    val wasEnforcing: Int,
-    val usedPermissive: Boolean,
-    val held: Boolean,
-) {
-    val modeText: String get() = when (enforceNow) {
-        1 -> "enforcing"
-        0 -> "permissive"
-        else -> "unknown"
-    }
-
-    companion object {
-        val UNKNOWN = SelinuxState(false, false, -1, -1, false, false)
-
-        fun from(o: JSONObject?): SelinuxState {
-            if (o == null) return UNKNOWN
-            return SelinuxState(
-                available = o.optBoolean("available"),
-                allowed = o.optBoolean("allowed"),
-                enforceNow = o.optInt("enforce_now", -1),
-                wasEnforcing = o.optInt("was_enforcing", -1),
-                usedPermissive = o.optBoolean("used_permissive"),
-                held = o.optBoolean("held"),
-            )
-        }
-    }
-}
 
 data class NvResult(val item: Int, val status: Int, val statusText: String, val hex: String)
 

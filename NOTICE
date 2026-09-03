@@ -20,6 +20,8 @@ from other people's work:
   opcode numbering, which is what shipping modems agree with.
 
 * QCSuper -- https://github.com/P1sec/QCSuper -- GPLv3 -- and MobileInsight's
-  diag_revealer. The /dev/diag container framing and the DIAG_IOCTL_SWITCH_
-  LOGGING argument-probing technique are documented by them. No code was
-  copied; the approach was reimplemented here.
+  diag_revealer, for documenting how DIAG works on Android. Their /dev/diag
+  container framing and their DIAG_IOCTL_SWITCH_LOGGING argument-probing
+  technique were reimplemented in earlier versions of this helper; that
+  transport has since been dropped in favour of DIAG over QRTR. No code was
+  copied.

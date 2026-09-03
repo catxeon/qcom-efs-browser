@@ -33,8 +33,6 @@ data class UiState(
     val busyLabel: String? = null,
     val readOnly: Boolean = true,
     val verbose: Boolean = false,
-    val allowPermissive: Boolean = true,
-    val selinux: SelinuxState = SelinuxState.UNKNOWN,
     val localEnforce: Int? = null,
     val log: List<String> = emptyList(),
     val toast: String? = null,
@@ -51,21 +49,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
-
-    init {
-        viewModelScope.launch {
-            // A previous run may have been force-stopped while the policy was
-            // lowered; settle that before anything else.
-            val note = runCatching { repo.recoverSelinux() }.getOrNull()
-            _state.update {
-                it.copy(
-                    localEnforce = repo.localEnforceState(),
-                    log = if (note != null) it.log + note else it.log,
-                    toast = note ?: it.toast,
-                )
-            }
-        }
-    }
 
     // ---- plumbing ------------------------------------------------------
 
@@ -90,7 +73,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissToast() = _state.update { it.copy(toast = null) }
     fun setVerbose(on: Boolean) = _state.update { it.copy(verbose = on) }
-    fun setAllowPermissive(on: Boolean) = _state.update { it.copy(allowPermissive = on) }
 
     // ---- session -------------------------------------------------------
 
@@ -99,15 +81,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(phase = Phase.CONNECTING, error = null) }
         viewModelScope.launch {
             try {
-                val (info, log) = repo.connect(_state.value.verbose, _state.value.allowPermissive)
+                val (info, log) = repo.connect(_state.value.verbose)
                 _state.update {
                     it.copy(
                         phase = Phase.READY,
                         info = info,
                         readOnly = info.readOnly,
-                        selinux = info.selinux,
-                        localEnforce = info.selinux.enforceNow.takeIf { it >= 0 }
-                            ?: repo.localEnforceState(),
+                        localEnforce = repo.enforceState(),
                         log = log,
                     )
                 }
@@ -117,7 +97,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     it.copy(
                         phase = Phase.FAILED,
                         error = describe(t),
-                        localEnforce = repo.localEnforceState(),
+                        localEnforce = repo.enforceState(),
                         log = it.log + repo.lastStartLog + repo.daemonLog(),
                     )
                 }
@@ -127,35 +107,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun disconnect() = work("disconnecting") {
         repo.disconnect()
-        val enforce = repo.localEnforceState()
         _state.update {
             UiState(
                 verbose = it.verbose,
-                allowPermissive = it.allowPermissive,
-                localEnforce = enforce,
+                localEnforce = it.localEnforce,
                 log = it.log,
-            )
-        }
-    }
-
-    /** Puts SELinux back right now, without ending the session. */
-    fun restoreSelinux() = work("restoring SELinux") {
-        val st = repo.restoreSelinux()
-        _state.update {
-            it.copy(
-                selinux = st,
-                localEnforce = st.enforceNow.takeIf { v -> v >= 0 } ?: repo.localEnforceState(),
-                toast = "SELinux is ${st.modeText}",
-            )
-        }
-    }
-
-    fun refreshSelinux() = work {
-        val st = runCatching { repo.selinuxState() }.getOrNull()
-        _state.update {
-            it.copy(
-                selinux = st ?: it.selinux,
-                localEnforce = st?.enforceNow?.takeIf { v -> v >= 0 } ?: repo.localEnforceState(),
             )
         }
     }

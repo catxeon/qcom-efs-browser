@@ -17,7 +17,7 @@ jobs:
       - name: Build the helper for the host and run the protocol tests
         run: |
           mkdir -p build
-          gcc -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -fno-strict-aliasing -Werror -o build/qcom-efsd-host daemon/src/util.c daemon/src/selinux.c daemon/src/diag.c daemon/src/efs2.c daemon/src/main.c
+          gcc -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -fno-strict-aliasing -Werror -o build/qcom-efsd-host daemon/src/util.c daemon/src/diag.c daemon/src/efs2.c daemon/src/main.c
           python3 daemon/test/run_tests.py build/qcom-efsd-host
 
       - uses: actions/setup-java@v4

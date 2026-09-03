@@ -290,10 +290,9 @@ private fun ConnectScreen(state: UiState, vm: MainViewModel) {
     ) {
         Text("Modem EFS browser", style = MaterialTheme.typography.headlineSmall)
         Text(
-            "The app talks to the Qualcomm modem over DIAG through a small root helper. " +
-                    "It uses /dev/diag when the kernel has it, and falls back to the DIAG " +
-                    "service on the QRTR bus on devices that ship no diagchar driver. " +
-                    "Root is required either way.",
+            "The app talks to the Qualcomm modem over DIAG through a small root helper, " +
+                    "which reaches it through the DIAG service on the QRTR bus. Root is " +
+                    "required; nothing on the phone itself is modified, SELinux included.",
             style = MaterialTheme.typography.bodyMedium,
         )
 
@@ -310,24 +309,6 @@ private fun ConnectScreen(state: UiState, vm: MainViewModel) {
             Checkbox(checked = state.verbose, onCheckedChange = { vm.setVerbose(it) })
             Text("Verbose helper log")
         }
-
-        Row(verticalAlignment = Alignment.Top) {
-            Checkbox(
-                checked = state.allowPermissive,
-                onCheckedChange = { vm.setAllowPermissive(it) },
-            )
-            Column(Modifier.padding(top = 12.dp)) {
-                Text("Allow a temporary SELinux permissive window")
-                Text(
-                    "Used only if the policy blocks /dev/diag. The helper lowers SELinux, opens " +
-                            "the device, and puts enforcing back immediately; a watchdog process " +
-                            "restores it even if the helper is killed.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        }
-
-        Text(modeLine(state), style = MaterialTheme.typography.labelMedium)
 
         Button(
             onClick = { vm.connect() },
@@ -352,28 +333,6 @@ private fun ConnectScreen(state: UiState, vm: MainViewModel) {
 @Composable
 private fun BrowserScreen(state: UiState, vm: MainViewModel) {
     Column(Modifier.fillMaxSize()) {
-        if (state.selinux.held) {
-            Surface(color = MaterialTheme.colorScheme.errorContainer) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Filled.Warning, null, Modifier.size(20.dp))
-                    Spacer(Modifier.width(10.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("SELinux is permissive", style = MaterialTheme.typography.labelLarge)
-                        Text(
-                            "The policy blocks /dev/diag, so it is held down for this session. " +
-                                    "Enforcing comes back when you disconnect.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    TextButton(onClick = { vm.restoreSelinux() }) { Text("Restore") }
-                }
-            }
-        }
         Row(
             Modifier
                 .fillMaxWidth()
@@ -579,23 +538,15 @@ private fun hexDump(bytes: ByteArray, limit: Int = 8192): String = buildString {
 @Composable
 private fun LogDialog(state: UiState, onRefresh: () -> Unit, onDismiss: () -> Unit) {
     val log = state.log
-    val se = state.selinux
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Diagnostics") },
         text = {
             Column(Modifier.heightIn(max = 460.dp)) {
                 Text(modeLine(state), style = MaterialTheme.typography.labelLarge)
-                if (se.usedPermissive) {
-                    Text(
-                        if (se.held) "The helper is holding SELinux permissive for this session."
-                        else "The helper lowered SELinux during setup and has already restored it.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
                 state.info?.let {
                     Text(
-                        "logging variant ${it.loggingVariant} · peripherals 0x${it.peripheralMask.toString(16)}",
+                        "transport ${it.transport}",
                         style = MaterialTheme.typography.labelSmall,
                     )
                 }
@@ -614,11 +565,9 @@ private fun LogDialog(state: UiState, onRefresh: () -> Unit, onDismiss: () -> Un
     )
 }
 
-private fun modeLine(state: UiState): String = "SELinux: " + when (state.localEnforce) {
-    1 -> "enforcing"
-    0 -> "permissive"
-    else -> "unknown"
-}
+/** Reported, never changed: the helper leaves the policy exactly as it found it. */
+private fun modeLine(state: UiState): String =
+    "SELinux: " + RootDaemon.modeName(state.localEnforce) + " (untouched)"
 
 @Composable
 private fun NvDialog(state: UiState, vm: MainViewModel, onDismiss: () -> Unit) {

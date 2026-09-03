@@ -24,66 +24,33 @@ class EfsRepository(private val ctx: Context) {
 
     // ---- session -------------------------------------------------------
 
-    suspend fun connect(verbose: Boolean, allowPermissive: Boolean): Pair<DaemonInfo, List<String>> {
-        val report = RootDaemon.start(ctx, verbose, allowPermissive)
+    suspend fun connect(verbose: Boolean): Pair<DaemonInfo, List<String>> {
+        val report = RootDaemon.start(ctx, verbose)
         lastStartLog = report.lines
         lastEnforce = report.enforce
         if (!report.ok) throw EfsException(report.error ?: "the helper did not start")
 
         client.connect()
         val version = client.cmd("version").optString("version", "?")
-
-        val open = try {
-            client.cmd("open") {
-                put("permissive", if (allowPermissive) "auto" else "never")
-            }
-        } catch (t: Throwable) {
-            // A failed open may still have touched the policy on the way.
-            rememberSelinuxDebt(runCatching { selinuxState() }.getOrNull())
-            throw t
-        }
-
-        val selinux = SelinuxState.from(open.optJSONObject("selinux"))
-        rememberSelinuxDebt(selinux)
+        val open = client.cmd("open")
 
         val info = DaemonInfo(
             version = version,
             subsys = open.optInt("subsys"),
-            loggingVariant = open.optInt("logging_variant"),
-            peripheralMask = open.optInt("peripheral_mask"),
+            transport = open.optString("transport"),
             readOnly = open.optBoolean("readonly", true),
-            selinux = selinux,
         )
         return info to (report.lines + RootDaemon.readDaemonLog(ctx))
     }
 
     suspend fun disconnect() {
-        runCatching { client.cmd("selinux_restore") }
         runCatching { client.cmd("shutdown") }
         client.close()
-        RootDaemon.stop(ctx)
+        RootDaemon.stop()
     }
 
-    // ---- SELinux -------------------------------------------------------
-
-    suspend fun selinuxState(): SelinuxState =
-        SelinuxState.from(client.cmd("selinux").optJSONObject("selinux"))
-
-    suspend fun restoreSelinux(): SelinuxState {
-        val st = SelinuxState.from(client.cmd("selinux_restore").optJSONObject("selinux"))
-        rememberSelinuxDebt(st)
-        return st
-    }
-
-    /** Notes what has to be put back if this app dies before the helper does. */
-    private fun rememberSelinuxDebt(st: SelinuxState?) {
-        val debt = if (st != null && st.held && st.wasEnforcing >= 0) st.wasEnforcing else null
-        RootDaemon.noteOutstandingRestore(ctx, debt)
-    }
-
-    suspend fun recoverSelinux(): String? = RootDaemon.recoverSelinux(ctx)
-
-    fun localEnforceState(): Int? = RootDaemon.enforceState() ?: lastEnforce
+    /** The SELinux mode as root saw it at connect time; the app never changes it. */
+    fun enforceState(): Int? = lastEnforce
 
     suspend fun setReadOnly(on: Boolean) {
         client.cmd("readonly") { put("on", on) }

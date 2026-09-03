@@ -4,7 +4,7 @@
     python3 daemon/test/run_tests.py /path/to/qcom-efsd
 
 Starts the mock modem on a unix socket, starts the daemon pointed at it with
-`-dev`, then drives the daemon over its abstract socket exactly the way the
+`-mock`, then drives the daemon over its abstract socket exactly the way the
 Android app does and checks the answers.
 """
 
@@ -50,7 +50,7 @@ class Client:
         return json.loads(line)
 
 
-def spawn(daemon_bin, tmp, tag, reject_hellos=0, extra=()):
+def spawn(daemon_bin, tmp, tag, reject_hellos=0, datagram_header=False, extra=()):
     """Starts a mock modem plus a daemon wired to it; returns (mock, daemon, client)."""
     mock_sock = os.path.join(tmp, "modem-%s.sock" % tag)
     mock_log = os.path.join(tmp, "modem-%s.log" % tag)
@@ -58,7 +58,7 @@ def spawn(daemon_bin, tmp, tag, reject_hellos=0, extra=()):
 
     mock = subprocess.Popen(
         [sys.executable, os.path.join(HERE, "mock_modem.py"),
-         mock_sock, mock_log, str(reject_hellos)],
+         mock_sock, mock_log, str(reject_hellos), "1" if datagram_header else "0"],
         stdout=subprocess.PIPE)
     if mock.stdout.readline().strip() != b"ready":
         raise RuntimeError("mock modem failed to start")
@@ -66,7 +66,7 @@ def spawn(daemon_bin, tmp, tag, reject_hellos=0, extra=()):
     log = open(os.path.join(tmp, "daemon-%s.log" % tag), "w+")
     daemon = subprocess.Popen(
         [daemon_bin, "-uid", str(os.getuid()), "-socket", name,
-         "-dev", mock_sock, "-verbose"] + list(extra),
+         "-mock", mock_sock, "-verbose"] + list(extra),
         stdout=log, stderr=subprocess.STDOUT)
 
     deadline = time.time() + 5
@@ -78,72 +78,45 @@ def spawn(daemon_bin, tmp, tag, reject_hellos=0, extra=()):
     raise RuntimeError("could not connect to the daemon")
 
 
-def test_selinux(daemon_bin, tmp):
-    """The permissive window: escalate only when needed, always come back."""
-    node = os.path.join(tmp, "enforce")
+def test_transport(daemon_bin, tmp):
+    """The two datagram shapes seen on real hardware, and the silent modem."""
 
-    # -- it must not touch a policy it was never allowed to touch --
-    open(node, "w").write("1")
-    mock, daemon, c, _ = spawn(daemon_bin, tmp, "nose", reject_hellos=3,
-                               extra=["-selinux-node", node])
+    # -- SM8850 and newer prefix every datagram with a 4-byte header --
+    mock, daemon, c, _ = spawn(daemon_bin, tmp, "hdr", datagram_header=True)
     try:
         r = c.cmd(cmd="open")
-        check("without -allow-permissive the modem stays unreachable", r.get("ok") is False, r)
-        check("and enforcing is untouched", open(node).read() == "1", open(node).read())
+        check("a modem that adds the 4-byte datagram header still opens", r.get("ok"), r)
+        r = c.cmd(cmd="read", path="/README.txt")
+        check("and its answers survive the extra header",
+              base64.b64decode(r.get("data", "")).startswith(b"hello from"), r)
     finally:
         daemon.kill(); mock.kill()
 
-    # -- escalation, then restore on command --
-    open(node, "w").write("1")
-    mock, daemon, c, _ = spawn(daemon_bin, tmp, "esc", reject_hellos=3,
-                               extra=["-allow-permissive", "-selinux-node", node])
+    # -- a modem that never answers must fail with a readable error --
+    mock, daemon, c, _ = spawn(daemon_bin, tmp, "mute", reject_hellos=99)
     try:
         r = c.cmd(cmd="open")
-        se = r.get("selinux", {})
-        check("a blocked modem triggers the permissive retry", r.get("ok") and se.get("used_permissive"), r)
-        check("the window is held for the session", se.get("held") is True, se)
-        check("the node really went permissive", open(node).read() == "0", open(node).read())
-        check("the original value was recorded", se.get("was_enforcing") == 1, se)
-
-        r = c.cmd(cmd="selinux_restore")
-        check("restore on demand", r.get("selinux", {}).get("held") is False, r)
-        check("enforcing is back", open(node).read() == "1", open(node).read())
+        check("a silent modem fails the open", r.get("ok") is False, r)
+        check("and says which subsystems it tried",
+              "0x13" in str(r.get("error", "")), r)
+        r = c.cmd(cmd="ls", path="/")
+        check("commands are refused until a session exists", r.get("ok") is False, r)
     finally:
         daemon.kill(); mock.kill()
 
-    # -- the deadman: SIGKILL cannot be caught, so a child has to do it --
-    open(node, "w").write("1")
-    mock, daemon, c, _ = spawn(daemon_bin, tmp, "kill", reject_hellos=3,
-                               extra=["-allow-permissive", "-selinux-node", node])
+    # -- shutdown has to actually stop the process, not just say goodbye --
+    mock, daemon, c, _ = spawn(daemon_bin, tmp, "bye")
     try:
-        r = c.cmd(cmd="open")
-        check("held again before the kill", r.get("selinux", {}).get("held") is True, r.get("selinux"))
-        check("permissive before the kill", open(node).read() == "0", open(node).read())
-
-        daemon.kill()                      # SIGKILL -- no handler can run
-        daemon.wait(timeout=5)
-        deadline = time.time() + 5
-        while time.time() < deadline and open(node).read() != "1":
-            time.sleep(0.1)
-        check("the deadman restores enforcing after SIGKILL",
-              open(node).read() == "1", open(node).read())
-    finally:
+        r = c.cmd(cmd="shutdown")
+        check("shutdown is acknowledged", r.get("bye") is True, r)
         try:
-            daemon.kill()
-        except Exception:
-            pass
-        mock.kill()
-
-    # -- a graceful exit restores too --
-    open(node, "w").write("1")
-    mock, daemon, c, _ = spawn(daemon_bin, tmp, "term", reject_hellos=3,
-                               extra=["-allow-permissive", "-selinux-node", node])
-    try:
-        c.cmd(cmd="open")
-        daemon.terminate()                 # SIGTERM -- the handler runs
-        daemon.wait(timeout=5)
-        check("SIGTERM restores enforcing", open(node).read() == "1", open(node).read())
+            rc = daemon.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            rc = None
+        check("and the daemon really exits", rc == 0, "exit status %s" % rc)
     finally:
+        if daemon.poll() is None:
+            daemon.kill()
         mock.kill()
 
 
@@ -163,7 +136,7 @@ def main():
     daemon_log = open(os.path.join(tmp, "daemon.log"), "w+")
     daemon = subprocess.Popen(
         [daemon_bin, "-uid", str(os.getuid()), "-socket", SOCKET_NAME,
-         "-dev", mock_sock, "-verbose"],
+         "-mock", mock_sock, "-verbose"],
         stdout=daemon_log, stderr=subprocess.STDOUT)
 
     client = None
@@ -183,7 +156,7 @@ def main():
     try:
         run(client, tmp)
         print()
-        test_selinux(daemon_bin, tmp)
+        test_transport(daemon_bin, tmp)
     finally:
         try:
             client.cmd(cmd="shutdown")
@@ -215,7 +188,7 @@ def run(c, tmp):
     check("open succeeds", r.get("ok"), r)
     check("falls back from subsys 0x3E to 0x13", r.get("subsys") == 0x13, r.get("subsys"))
     check("starts read-only", r.get("readonly") is True, r)
-    check("selinux untouched", r.get("selinux", {}).get("used_permissive") is False, r.get("selinux"))
+    check("the transport is named in the reply", r.get("transport", "").endswith(".sock"), r)
 
     # ---- listing ----
     r = c.cmd(cmd="ls", path="/")

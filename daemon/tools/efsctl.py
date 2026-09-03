@@ -73,7 +73,7 @@ def main():
         print(json.dumps(c.cmd(cmd=args[0], **json.loads(args[1])), indent=2))
     else:
         payload = json.loads(args[1]) if len(args) > 1 else {}
-        if verb not in ("version", "readonly", "selinux", "stats", "shutdown", "close"):
+        if verb not in ("version", "readonly", "stats", "shutdown", "close"):
             c.cmd(cmd="open")
         print(json.dumps(c.cmd(cmd=verb, **payload), indent=2))
     return 0
