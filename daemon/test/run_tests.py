@@ -57,6 +57,7 @@ def spawn(daemon_bin, tmp, tag, reject_hellos=0, datagram_header=False, extra=()
     mock_log = os.path.join(tmp, "modem-%s.log" % tag)
     name = "%s_%s" % (SOCKET_NAME, tag)
 
+    # the mock's shared 4th argv slot carries the datagram-header flag or an ssr mode, never both
     args = [sys.executable, os.path.join(HERE, "mock_modem.py"),
             mock_sock, mock_log, str(reject_hellos),
             ssr_mode if ssr_mode else ("1" if datagram_header else "0")]
@@ -155,7 +156,7 @@ def test_ssr(daemon_bin, tmp):
         c.cmd(cmd="readonly", on=False)
         r = c.cmd(cmd="ssr")
         check("a silent ssr service reports no response",
-              r.get("ok") is False and "ssr_no_response" in str(r.get("error")), r)
+              r.get("ok") is False and "the SSR service did not answer" in str(r.get("error")), r)
     finally:
         daemon.kill(); mock.kill()
 

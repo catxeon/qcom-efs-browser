@@ -12,7 +12,12 @@ optionally preceded, as on SM8850 and newer, by a datagram header
 
     [u16 type = 8][u16 length of the rest]
 
-which the fourth argument turns on.
+The command line is <socket> <log> [reject_hellos] [mode].  reject_hellos
+(argv[3], default 0) is the number of initial DIAG_HELLOs to swallow.  mode
+(argv[4], default "0") is overloaded: "1" turns the datagram header on,
+"0" leaves it off, and "ssr" or "ssr_silent" additionally serve a fake
+vendor SSR service (0xFFE4) on <socket>.ssr -- "ssr" answers every request,
+"ssr_silent" logs them and never answers.
 
 The packet *layouts* are transcribed from qfenix's diag.c -- responses are
 built the way qfenix parses them and requests are parsed the way qfenix builds
@@ -598,6 +603,7 @@ def serve_ssr(path, logpath, mode):
             rsp[1:3] = blob[1:3]          # transaction id echo
             rsp[3:5] = blob[3:5]          # message id echo
             conn.send(bytes(rsp))
+        conn.close()
 
 
 if __name__ == "__main__":

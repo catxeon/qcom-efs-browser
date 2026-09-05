@@ -917,8 +917,9 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-verbose"))                 g_verbose = 1;
         else if (!strcmp(argv[i], "-rw"))                      g_readonly = 0;
         else if (!strcmp(argv[i], "-mock") && i + 1 < argc) {
-            diag_set_mock(argv[++i]);
-            ssr_set_mock(argv[i]);
+            const char *m = argv[++i];
+            diag_set_mock(m);
+            ssr_set_mock(m);
         }
         else if (!strcmp(argv[i], "-qrtr") && i + 1 < argc) {
             unsigned long node = 0, port = 0;

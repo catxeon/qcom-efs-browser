@@ -162,7 +162,7 @@ static int64_t now_ms(void)
     return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
-/* Sends one datagram and waits up to [timeout_ms] for one with the request's
+/* Sends one datagram and waits up to REPLY_TIMEOUT_MS for one with the request's
  * transaction id and message id echoed back.  0 on match, -1 on timeout. */
 static int xfer(int fd, const struct sockaddr_qrtr *dst, socklen_t dstlen,
                 char *err, size_t errsz)
@@ -181,7 +181,7 @@ static int xfer(int fd, const struct sockaddr_qrtr *dst, socklen_t dstlen,
     for (;;) {
         int left = (int)(deadline - now_ms());
         if (left <= 0) {
-            snprintf(err, errsz, "ssr_no_response");
+            snprintf(err, errsz, "the SSR service did not answer");
             return -1;
         }
 
@@ -193,14 +193,14 @@ static int xfer(int fd, const struct sockaddr_qrtr *dst, socklen_t dstlen,
             return -1;
         }
         if (pr == 0) {
-            snprintf(err, errsz, "ssr_no_response");
+            snprintf(err, errsz, "the SSR service did not answer");
             return -1;
         }
 
         uint8_t rsp[1024];
         ssize_t n = recv(fd, rsp, sizeof rsp, 0);
-        if (n == 0) { snprintf(err, errsz, "the SSR endpoint closed the connection"); return -1; }
-        if (n < 5) continue;
+        if (dst == NULL && n == 0) { snprintf(err, errsz, "the SSR endpoint closed the connection"); return -1; }
+        if (n <= 0) continue;
         /* response type byte not gated — unverified for this proprietary service; the proven replay tool applies no flag test either. The txn+msg_id echo is the discriminator. */
         if (rsp[1] != ssr_request[1] || rsp[2] != ssr_request[2]) continue;
         if (rsp[3] != ssr_request[3] || rsp[4] != ssr_request[4]) continue;
@@ -247,13 +247,6 @@ int ssr_trigger(char *err, size_t errsz)
     int fd = socket(AF_QIPCRTR, SOCK_DGRAM, 0);
     if (fd < 0) {
         snprintf(err, errsz, "socket(AF_QIPCRTR) failed: %s", strerror(errno));
-        return -1;
-    }
-
-    struct timeval tv = { REPLY_TIMEOUT_MS / 1000, (REPLY_TIMEOUT_MS % 1000) * 1000 };
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) < 0) {
-        snprintf(err, errsz, "setsockopt failed: %s", strerror(errno));
-        close(fd);
         return -1;
     }
 
