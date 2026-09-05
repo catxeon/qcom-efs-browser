@@ -4,11 +4,17 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.qcom.efs.bulk.BulkCommand
+import dev.qcom.efs.bulk.BulkOp
+import dev.qcom.efs.bulk.NvImportParseException
+import dev.qcom.efs.bulk.NvImportParser
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 enum class Phase { DISCONNECTED, CONNECTING, READY, FAILED }
@@ -43,6 +49,38 @@ data class EditorData(
 /** Anything larger is better edited on a computer than in a text field. */
 private const val MAX_EDIT = 64 * 1024
 
+/** One executed bulk command, shown in the dialog's result list. */
+data class BulkResult(
+    val op: BulkOp,
+    val path: String,
+    val simTag: String,
+    val ok: Boolean,
+    val error: String? = null,
+)
+
+sealed interface BulkState {
+    /** File picked and parsed; the import has not started yet. */
+    data class Preview(
+        val fileName: String,
+        val commands: List<BulkCommand>,
+        val error: String? = null,
+    ) : BulkState
+
+    /** Sequential execution in progress; [results] has [done] entries. */
+    data class Running(
+        val fileName: String,
+        val commands: List<BulkCommand>,
+        val done: Int,
+        val results: List<BulkResult>,
+    ) : BulkState
+
+    /** Finished. [summary] is a non-fatal note (e.g. a failed journal flush). */
+    data class Done(
+        val results: List<BulkResult>,
+        val summary: String? = null,
+    ) : BulkState
+}
+
 data class UiState(
     val phase: Phase = Phase.DISCONNECTED,
     val error: String? = null,
@@ -62,6 +100,8 @@ data class UiState(
     val pendingExport: PendingExport? = null,
     val nv: NvResult? = null,
     val nvError: String? = null,
+    /** Non-null while the bulk-import dialog is open. */
+    val bulk: BulkState? = null,
     /** Set once the session is closed and the activity should finish. */
     val exitAfterDisconnect: Boolean = false,
 )
@@ -305,6 +345,114 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(toast = "Wrote ${bytes.size} bytes as a $kind") }
         val entries = repo.list(_state.value.path)
         _state.update { it.copy(entries = entries) }
+    }
+
+    // ---- bulk import ----------------------------------------------------
+
+    fun startBulkImport(uri: Uri) = viewModelScope.launch {
+        val name = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: "file"
+        val text = withContext(Dispatchers.IO) {
+            runCatching {
+                getApplication<Application>().contentResolver.openInputStream(uri)
+                    ?.bufferedReader()?.use { it.readText() }
+            }.getOrNull()
+        }
+        if (text == null) {
+            _state.update {
+                it.copy(bulk = BulkState.Preview(name, emptyList(), error = "The selected file could not be read"))
+            }
+            return@launch
+        }
+        _state.update {
+            try {
+                it.copy(bulk = BulkState.Preview(name, NvImportParser.parse(text)))
+            } catch (e: NvImportParseException) {
+                it.copy(bulk = BulkState.Preview(name, emptyList(), error = e.message))
+            }
+        }
+    }
+
+    fun closeBulkImport() = _state.update { it.copy(bulk = null) }
+
+    /**
+     * Runs the SPC pre-flight, then executes the commands one by one.  A
+     * failure never stops the run - it is recorded and the next command is
+     * tried, the way mtb reports per-command results.  Losing the connection
+     * aborts the run and marks the remaining commands as skipped.
+     */
+    fun runBulkImport(spc: String) {
+        val preview = _state.value.bulk as? BulkState.Preview ?: return
+        if (preview.commands.isEmpty()) return
+        viewModelScope.launch {
+            val cmds = preview.commands
+
+            if (cmds.any { it.op == BulkOp.WRITE }) {
+                val unlocked = try {
+                    repo.spcUnlock(spc)
+                } catch (t: Throwable) {
+                    _state.update {
+                        it.copy(bulk = preview.copy(error = "SPC pre-flight failed: ${describe(t)}"))
+                    }
+                    return@launch
+                }
+                if (!unlocked) {
+                    _state.update {
+                        it.copy(bulk = preview.copy(
+                            error = "The modem rejected the SPC - import aborted."))
+                    }
+                    return@launch
+                }
+            }
+
+            _state.update { it.copy(bulk = BulkState.Running(preview.fileName, cmds, 0, emptyList())) }
+
+            val results = mutableListOf<BulkResult>()
+            var aborted = false
+            for (cmd in cmds) {
+                if (aborted) {
+                    results.add(BulkResult(cmd.op, cmd.efsPath, cmd.simTag, ok = false, error = "skipped - connection lost"))
+                    continue
+                }
+                val result = try {
+                    when (cmd.op) {
+                        BulkOp.WRITE -> {
+                            repo.writeFile(cmd.efsPath, hexBytes(cmd.dataHex!!), item = null)
+                            BulkResult(cmd.op, cmd.efsPath, cmd.simTag, ok = true)
+                        }
+                        BulkOp.DELETE -> {
+                            repo.unlink(cmd.efsPath)
+                            BulkResult(cmd.op, cmd.efsPath, cmd.simTag, ok = true)
+                        }
+                    }
+                } catch (t: Throwable) {
+                    if (t is EfsException && !repo.connected) aborted = true
+                    BulkResult(cmd.op, cmd.efsPath, cmd.simTag, ok = false, error = describe(t))
+                }
+                results.add(result)
+                _state.update {
+                    it.copy(bulk = BulkState.Running(preview.fileName, cmds, results.size, results.toList()))
+                }
+            }
+
+            var summary: String? = null
+            if (results.any { it.ok }) {
+                try {
+                    repo.sync()
+                } catch (t: Throwable) {
+                    summary = "journal flush failed: ${describe(t)}"
+                }
+            }
+            _state.update { it.copy(bulk = BulkState.Done(results, summary)) }
+        }
+    }
+
+    fun modemSsr() = work("restarting the modem") {
+        repo.modemSsr()
+        _state.update { it.copy(toast = "SSR issued - waiting for the modem to come back") }
+    }
+
+    private fun hexBytes(hex: String): ByteArray = ByteArray(hex.length / 2) { i ->
+        ((Character.digit(hex[2 * i], 16) shl 4) or Character.digit(hex[2 * i + 1], 16)).toByte()
     }
 
     // ---- mutations -----------------------------------------------------
