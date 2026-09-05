@@ -201,6 +201,7 @@ static int xfer(int fd, const struct sockaddr_qrtr *dst, socklen_t dstlen,
         ssize_t n = recv(fd, rsp, sizeof rsp, 0);
         if (dst == NULL && n == 0) { snprintf(err, errsz, "the SSR endpoint closed the connection"); return -1; }
         if (n <= 0) continue;
+        if (n < 5) continue;                     /* too short to hold the txn+msg_id echo */
         /* response type byte not gated — unverified for this proprietary service; the proven replay tool applies no flag test either. The txn+msg_id echo is the discriminator. */
         if (rsp[1] != ssr_request[1] || rsp[2] != ssr_request[2]) continue;
         if (rsp[3] != ssr_request[3] || rsp[4] != ssr_request[4]) continue;

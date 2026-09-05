@@ -66,6 +66,8 @@ sealed interface BulkState {
         val fileName: String,
         val commands: List<BulkCommand>,
         val error: String? = null,
+        /** Feedback that would otherwise go to the snackbar behind the dialog. */
+        val note: String? = null,
     ) : BulkState
 
     /** Sequential execution in progress; [results] has [done] entries. */
@@ -80,6 +82,8 @@ sealed interface BulkState {
     data class Done(
         val results: List<BulkResult>,
         val summary: String? = null,
+        /** Feedback that would otherwise go to the snackbar behind the dialog. */
+        val note: String? = null,
     ) : BulkState
 }
 
@@ -475,8 +479,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun modemSsr() = work("restarting the modem") {
-        repo.modemSsr()
-        _state.update { it.copy(toast = "SSR issued - waiting for the modem to come back") }
+        val msg = try {
+            repo.modemSsr()
+            "SSR issued - waiting for the modem to come back"
+        } catch (t: Throwable) {
+            describe(t)
+        }
+        // The dialog covers the snackbar, so the SSR button's feedback goes
+        // into the dialog itself.
+        _state.update { s ->
+            when (val bulk = s.bulk) {
+                is BulkState.Done -> s.copy(bulk = bulk.copy(note = msg))
+                else -> s.copy(toast = msg)
+            }
+        }
     }
 
     // ---- mutations -----------------------------------------------------
@@ -523,10 +539,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun spcUnlock(spc: String) = work("sending the SPC") {
-        val ok = repo.spcUnlock(spc)
-        _state.update {
-            it.copy(toast = if (ok) "SPC accepted - NV writes are unlocked"
-            else "SPC rejected - the modem did not accept that code")
+        val msg = try {
+            if (repo.spcUnlock(spc)) "SPC accepted - NV writes are unlocked"
+            else "SPC rejected - the modem did not accept that code"
+        } catch (t: Throwable) {
+            describe(t)
+        }
+        // The dialog covers the snackbar, so the SPC test's feedback goes into
+        // the dialog itself while it is open.
+        _state.update { s ->
+            when (val bulk = s.bulk) {
+                is BulkState.Preview -> s.copy(bulk = bulk.copy(note = msg))
+                is BulkState.Done -> s.copy(bulk = bulk.copy(note = msg))
+                else -> s.copy(toast = msg)
+            }
         }
     }
 

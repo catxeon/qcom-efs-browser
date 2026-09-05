@@ -253,7 +253,8 @@ fun App(vm: MainViewModel) {
         BulkImportDialog(
             state = bulk,
             readOnly = state.readOnly,
-            onSpcUnlock = { spc -> if (spc.isEmpty()) vm.toggleReadOnly() else vm.spcUnlock(spc) },
+            onSpcUnlock = { spc -> vm.spcUnlock(spc) },
+            onEnableWrites = { vm.toggleReadOnly() },
             onStart = { spc -> vm.runBulkImport(spc) },
             onSsr = { vm.modemSsr() },
             onDismiss = { vm.closeBulkImport() },

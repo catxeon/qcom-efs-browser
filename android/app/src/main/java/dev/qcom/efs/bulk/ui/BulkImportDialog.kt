@@ -43,6 +43,7 @@ fun BulkImportDialog(
     state: BulkState,
     readOnly: Boolean,
     onSpcUnlock: (String) -> Unit,
+    onEnableWrites: () -> Unit,
     onStart: (String) -> Unit,
     onSsr: () -> Unit,
     onDismiss: () -> Unit,
@@ -53,7 +54,7 @@ fun BulkImportDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 when (state) {
-                    is BulkState.Preview -> PreviewBody(state, readOnly, onStart, onSpcUnlock)
+                    is BulkState.Preview -> PreviewBody(state, readOnly, onStart, onSpcUnlock, onEnableWrites)
                     is BulkState.Running -> RunningBody(state)
                     is BulkState.Done -> DoneBody(state, onSsr)
                 }
@@ -73,6 +74,7 @@ private fun PreviewBody(
     readOnly: Boolean,
     onStart: (String) -> Unit,
     onSpcUnlock: (String) -> Unit,
+    onEnableWrites: () -> Unit,
 ) {
     var spc by remember { mutableStateOf("000000") }
 
@@ -96,7 +98,7 @@ private fun PreviewBody(
             color = MaterialTheme.colorScheme.error,
             style = MaterialTheme.typography.bodySmall,
         )
-        TextButton(onClick = { onSpcUnlock("") }) { Text("I understand - enable writes") }
+        TextButton(onClick = onEnableWrites) { Text("I understand - enable writes") }
     }
 
     if (!readOnly && state.commands.isNotEmpty()) {
@@ -115,6 +117,13 @@ private fun PreviewBody(
         )
         TextButton(onClick = { onSpcUnlock(spc) }, enabled = spc.length == 6) {
             Text("Test the SPC")
+        }
+        state.note?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         Button(
             onClick = { onStart(spc) },
@@ -138,12 +147,22 @@ private fun RunningBody(state: BulkState.Running) {
 private fun DoneBody(state: BulkState.Done, onSsr: () -> Unit) {
     val ok = state.results.count { it.ok }
     val fail = state.results.size - ok
+    var ssrBusy by remember { mutableStateOf(false) }
+    LaunchedEffect(state.note) { ssrBusy = false }
+
     Text(
         "Done — $ok OK, $fail FAIL",
         color = if (fail == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
     )
     state.summary?.let {
         Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+    }
+    state.note?.let {
+        Text(
+            it,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
     if (state.results.any { it.ok }) {
         Text(
@@ -152,7 +171,11 @@ private fun DoneBody(state: BulkState.Done, onSsr: () -> Unit) {
         )
     }
     if (fail == 0) {
-        Button(onClick = onSsr, modifier = Modifier.fillMaxWidth()) {
+        Button(
+            onClick = { ssrBusy = true; onSsr() },
+            enabled = !ssrBusy,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
             Text("Restart modem (SSR)")
         }
     }
