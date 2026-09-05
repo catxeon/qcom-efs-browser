@@ -37,7 +37,7 @@
 #define LOOKUP_TIMEOUT_MS     2000
 #define REPLY_TIMEOUT_MS      3000
 
-static char g_mock_path[400];
+static char g_mock_path[512];
 
 void ssr_set_mock(const char *path)
 {
@@ -127,9 +127,11 @@ static int discover(uint32_t *node, uint32_t *port, char *err, size_t errsz)
     q.service = SSR_SERVICE;
 
     for (int t = 0; t < LOOKUP_TRIES; t++) {
-        if (sendto(fd, &q, sizeof q, 0, (struct sockaddr *)&ctrl, sizeof ctrl)
-                != (ssize_t)sizeof q)
-            continue;
+        if (sendto(fd, &q, sizeof q, 0, (struct sockaddr *)&ctrl, sizeof ctrl) < 0) {
+            snprintf(err, errsz, "QRTR lookup failed: %s", strerror(errno));
+            close(fd);
+            return -1;
+        }
 
         for (;;) {
             struct qrtr_ctrl_pkt in;
@@ -184,13 +186,20 @@ static int xfer(int fd, const struct sockaddr_qrtr *dst, socklen_t dstlen,
         }
 
         struct pollfd p = { fd, POLLIN, 0 };
-        if (poll(&p, 1, left) <= 0) {
+        int pr = poll(&p, 1, left);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            snprintf(err, errsz, "poll failed: %s", strerror(errno));
+            return -1;
+        }
+        if (pr == 0) {
             snprintf(err, errsz, "ssr_no_response");
             return -1;
         }
 
         uint8_t rsp[1024];
         ssize_t n = recv(fd, rsp, sizeof rsp, 0);
+        if (n == 0) { snprintf(err, errsz, "the SSR endpoint closed the connection"); return -1; }
         if (n < 5) continue;
         /* response type byte not gated — unverified for this proprietary service; the proven replay tool applies no flag test either. The txn+msg_id echo is the discriminator. */
         if (rsp[1] != ssr_request[1] || rsp[2] != ssr_request[2]) continue;
@@ -204,7 +213,7 @@ int ssr_trigger(char *err, size_t errsz)
 {
     if (g_mock_path[0]) {
         /* Test rig: the mock serves the fake 0xFFE4 endpoint on <mock>.ssr. */
-        char path[512];
+        char path[sizeof g_mock_path + 4];
         snprintf(path, sizeof path, "%s.ssr", g_mock_path);
 
         int fd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
@@ -222,9 +231,7 @@ int ssr_trigger(char *err, size_t errsz)
         }
         memcpy(sa.sun_path, path, strlen(path));
         if (connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
-            snprintf(err, errsz,
-                     "no SSR service (0xFFE4) published on the QRTR bus - "
-                     "modem restart is only available on Xiaomi devices");
+            snprintf(err, errsz, "connect %s: %s", path, strerror(errno));
             close(fd);
             return -1;
         }

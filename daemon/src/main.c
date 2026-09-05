@@ -732,6 +732,15 @@ static void dispatch(const char *req, sbuf *o)
         return;
     }
 
+    /* SSR is wedged-modem recovery: it uses neither the EFS session nor the
+     * DIAG transport, so it stays reachable even when open cannot complete.
+     * It still changes modem state, so the write gate holds. */
+    if (!strcmp(cmd, "ssr")) {
+        if (require_write(o) < 0) return;
+        cmd_ssr(o);
+        return;
+    }
+
     if (require_open(o) < 0) return;
 
     if (!strcmp(cmd, "ls")) {
@@ -774,7 +783,6 @@ static void dispatch(const char *req, sbuf *o)
     if (!strcmp(cmd, "write"))    { cmd_write(req, o); return; }
     if (!strcmp(cmd, "nv_write")) { cmd_nv_write(req, o); return; }
     if (!strcmp(cmd, "spc"))      { cmd_spc(req, o); return; }
-    if (!strcmp(cmd, "ssr"))      { cmd_ssr(o); return; }
 
     if (!strcmp(cmd, "mkdir") || !strcmp(cmd, "rmdir") || !strcmp(cmd, "unlink") ||
         !strcmp(cmd, "rmtree") || !strcmp(cmd, "chmod")) {
