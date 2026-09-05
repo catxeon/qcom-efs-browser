@@ -36,6 +36,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+import dev.qcom.efs.bulk.ui.BulkImportDialog
+
 private val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
 
 private fun time(v: Int): String =
@@ -76,6 +78,10 @@ fun App(vm: MainViewModel) {
             }
         }
     }
+
+    val bulkImporter = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) vm.startBulkImport(uri) }
 
     val ctx = LocalContext.current
     LaunchedEffect(state.exitAfterDisconnect) {
@@ -143,6 +149,14 @@ fun App(vm: MainViewModel) {
                                 text = { Text("NV items") },
                                 leadingIcon = { Icon(Icons.Filled.Memory, null) },
                                 onClick = { menu = false; showNv = true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Bulk import") },
+                                leadingIcon = { Icon(Icons.Filled.UploadFile, null) },
+                                onClick = {
+                                    menu = false
+                                    bulkImporter.launch(arrayOf("text/plain", "application/json"))
+                                },
                             )
                             DropdownMenuItem(
                                 text = { Text("Raw DIAG packet") },
@@ -234,6 +248,17 @@ fun App(vm: MainViewModel) {
     if (showLog) LogDialog(state, onRefresh = { vm.refreshLog() }) { showLog = false }
     if (showNv) NvDialog(state, vm) { showNv = false }
     if (showRaw) RawDialog(vm) { showRaw = false }
+
+    state.bulk?.let { bulk ->
+        BulkImportDialog(
+            state = bulk,
+            readOnly = state.readOnly,
+            onSpcUnlock = { spc -> if (spc.isEmpty()) vm.toggleReadOnly() else vm.spcUnlock(spc) },
+            onStart = { spc -> vm.runBulkImport(spc) },
+            onSsr = { vm.modemSsr() },
+            onDismiss = { vm.closeBulkImport() },
+        )
+    }
 
     if (showMkdir) {
         TextPromptDialog(
