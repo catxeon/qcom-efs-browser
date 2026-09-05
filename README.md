@@ -34,7 +34,7 @@ modem's filesystem.
 | Unlock NV writes | the Service Programming Code (`0x41`) raises the DIAG access level for the session |
 | Flush the EFS2 journal | `SYNC_NO_WAIT` / `SYNC_GET_STATUS` (48/49) |
 | Arbitrary DIAG packet | the `raw` command (hex → hex) |
-| Bulk-import NV changes from a JSON file | the mtbtool v2 format — [docs/bulk-import-format.md](docs/bulk-import-format.md) |
+| Bulk-import NV changes from a JSON file | the mtbtool v2 format (`sim0`/`sim1`/`dualsim` blocks; see the format doc in the mtbtool-android-app repo, `tools/bulk-import-format.md`) |
 | Diagnostics | helper log, receive stats, the transport it found |
 
 **Read-only is on by default** — the helper refuses every command that would
