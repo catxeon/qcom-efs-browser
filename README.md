@@ -139,7 +139,7 @@ uses the same QRTR framing instead of the real bus. The end-to-end test is built
 on it.
 
 ```bash
-gcc -std=gnu11 -O2 -Wall -Wextra -o /tmp/qcom-efsd-host daemon/src/util.c daemon/src/diag.c daemon/src/efs2.c daemon/src/main.c
+gcc -std=gnu11 -O2 -Wall -Wextra -o /tmp/qcom-efsd-host daemon/src/util.c daemon/src/diag.c daemon/src/efs2.c daemon/src/ssr.c daemon/src/main.c
 python3 daemon/test/run_tests.py /tmp/qcom-efsd-host
 ```
 
@@ -358,6 +358,7 @@ daemon/
   build.sh              builds the aarch64 binary with the NDK
   src/diag.c|h          transport: DIAG over QRTR
   src/efs2.c|h          EFS2 operations and NV items
+  src/ssr.c|h           Xiaomi modem restart via the vendor QMI service
   src/main.c            the unix socket, the JSON protocol, recursive operations
   test/mock_modem.py    a fake modem: EFS2 + NV in QRTR frames over a socket
   test/run_tests.py     the end-to-end test of the daemon against the mock
