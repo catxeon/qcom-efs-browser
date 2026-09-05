@@ -8,9 +8,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -120,7 +118,6 @@ private fun PreviewBody(
         }
         Button(
             onClick = { onStart(spc) },
-            enabled = state.error == null,
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Start import") }
@@ -148,11 +145,13 @@ private fun DoneBody(state: BulkState.Done, onSsr: () -> Unit) {
     state.summary?.let {
         Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     }
-    if (fail == 0) {
+    if (state.results.any { it.ok }) {
         Text(
             "Changes reach the running modem only after a restart.",
             style = MaterialTheme.typography.bodySmall,
         )
+    }
+    if (fail == 0) {
         Button(onClick = onSsr, modifier = Modifier.fillMaxWidth()) {
             Text("Restart modem (SSR)")
         }
