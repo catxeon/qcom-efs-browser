@@ -133,7 +133,7 @@ class EfsRepository(private val ctx: Context) {
         client.cmd(cmd) { put("path", path) }
     }
 
-    /** Bulk deletes carry no EfsEntry; mtb's delete targets files. */
+    /** Path-only delete: always sends `unlink` (file-level, no rmtree dispatch) for callers holding just a path — bulk imports carry no EfsEntry. Matches the Xiaomi mtb tool's delete. */
     suspend fun unlink(path: String) {
         client.cmd("unlink") { put("path", path) }
     }
@@ -240,9 +240,11 @@ class EfsRepository(private val ctx: Context) {
     suspend fun rawExchange(hex: String): String =
         client.cmd("raw") { put("hex", hex) }.optString("response")
 
+    // ---- modem maintenance ----
+
     /**
      * Asks the modem for a subsystem restart through the proprietary vendor
-     * QMI service, the same replay `mtb 11 0` performs.  Only Xiaomi modems
+     * QMI service, the same replay `mtb 11 0` performs. Only Xiaomi modems
      * publish that service; elsewhere the daemon reports the lookup failure.
      */
     suspend fun modemSsr() {
