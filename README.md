@@ -170,7 +170,8 @@ modem, a `shutdown` that must actually terminate the process, a security-locked
 NV write, and the SPC unlock are covered too.
 
 What the test does not cover: the availability of the QRTR bus and the modem's
-real answers — only hardware. 75 end-to-end checks against the mock.
+real answers — only hardware. 80 end-to-end checks against the mock (including
+the Xiaomi-only `ssr` restart command against a fake 0xFFE4 endpoint).
 
 ### Debugging on a live device without the app
 
