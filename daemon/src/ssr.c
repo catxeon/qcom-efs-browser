@@ -174,11 +174,6 @@ static int xfer(int fd, const struct sockaddr_qrtr *dst, socklen_t dstlen,
         return -1;
     }
 
-    /* flag 0x00 = response; bytes 1-2 transaction, 3-4 message id.  The QMI
-     * SDU header is little-endian on the wire -- the request above carries
-     * txn 0x0001 as 01 00 and msg 0x0002 as 02 00, and the replay tool reads
-     * the response back with le16() the same way -- so a real answer echoes
-     * the request's own bytes. */
     int64_t deadline = now_ms() + REPLY_TIMEOUT_MS;
 
     for (;;) {
@@ -197,7 +192,7 @@ static int xfer(int fd, const struct sockaddr_qrtr *dst, socklen_t dstlen,
         uint8_t rsp[1024];
         ssize_t n = recv(fd, rsp, sizeof rsp, 0);
         if (n < 5) continue;
-        if (rsp[0] != 0x00) continue;
+        /* response type byte not gated — unverified for this proprietary service; the proven replay tool applies no flag test either. The txn+msg_id echo is the discriminator. */
         if (rsp[1] != ssr_request[1] || rsp[2] != ssr_request[2]) continue;
         if (rsp[3] != ssr_request[3] || rsp[4] != ssr_request[4]) continue;
         qlog("SSR: %zd-byte response, transaction matches", n);
