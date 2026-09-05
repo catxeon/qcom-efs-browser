@@ -14,7 +14,7 @@ void ssr_set_mock(const char *path);
 
 /* Sends the captured request and waits for the answer.  Returns 0 on a
  * response with the expected transaction, -1 with [err] filled in
- * otherwise ("no SSR service ..." / "ssr_no_response" / strerror). */
+ * otherwise ("no SSR service ..." / "the SSR service did not answer" / strerror). */
 int ssr_trigger(char *err, size_t errsz);
 
 #endif

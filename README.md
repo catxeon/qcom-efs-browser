@@ -34,6 +34,7 @@ modem's filesystem.
 | Unlock NV writes | the Service Programming Code (`0x41`) raises the DIAG access level for the session |
 | Flush the EFS2 journal | `SYNC_NO_WAIT` / `SYNC_GET_STATUS` (48/49) |
 | Arbitrary DIAG packet | the `raw` command (hex → hex) |
+| Bulk-import NV changes from a JSON file | the mtbtool v2 format — [docs/bulk-import-format.md](docs/bulk-import-format.md) |
 | Diagnostics | helper log, receive stats, the transport it found |
 
 **Read-only is on by default** — the helper refuses every command that would
@@ -121,6 +122,7 @@ carries `ok`; on failure it carries `error` and, for EFS operations,
 {"cmd":"nv_read","item":550}
 {"cmd":"nv_write","item":550,"data":"00ff…"}
 {"cmd":"spc","spc":"000000"}          // raise the DIAG access level; unlock NV writes
+{"cmd":"ssr"}                          // Xiaomi-only modem subsystem restart; refused while read-only
 {"cmd":"raw","hex":"4b1300000000"}
 {"cmd":"raw","hex":"…","match":false} // return the first frame that arrives, whatever it is
 {"cmd":"readonly","on":false}
