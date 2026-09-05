@@ -170,6 +170,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun dismissToast() = _state.update { it.copy(toast = null) }
     fun setVerbose(on: Boolean) = _state.update { it.copy(verbose = on) }
 
+    /** The picker's own name for a chosen file, for pre-filling the import dialog. */
+    fun displayName(uri: Uri): String = repo.displayName(uri)
+
     // ---- session -------------------------------------------------------
 
     fun connect() {
@@ -385,7 +388,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var bulkRun: Job? = null
 
     fun startBulkImport(uri: Uri) = viewModelScope.launch {
-        val name = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: "file"
+        val name = repo.displayName(uri)
         var readError: String? = null
         val text = withContext(Dispatchers.IO) {
             try {

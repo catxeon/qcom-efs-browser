@@ -2,6 +2,7 @@ package dev.qcom.efs
 
 import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -206,6 +207,32 @@ class EfsRepository(private val ctx: Context) {
     suspend fun readUri(uri: Uri): ByteArray = withContext(Dispatchers.IO) {
         ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: throw EfsException("cannot read the selected file")
+    }
+
+    /**
+     * The name the file picker shows for [uri].
+     *
+     * The last path segment is not it: a document URI often ends in the
+     * provider's own row id ("content://.../document/4068"), which is how a
+     * picked `mcfg_autoselect_by_uim` used to arrive as "4068". Only
+     * DISPLAY_NAME is the real name, so ask for it and keep the segment as a
+     * fallback for providers that do not answer.
+     */
+    fun displayName(uri: Uri): String {
+        val fromProvider = runCatching {
+            ctx.contentResolver.query(
+                uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+            )?.use { c ->
+                val col = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (col >= 0 && c.moveToFirst()) c.getString(col) else null
+            }
+        }.getOrNull()
+
+        val name = fromProvider?.takeIf { it.isNotBlank() }
+            ?: uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
+
+        // A name still has to be usable as a single EFS path component.
+        return name?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "file"
     }
 
     // ---- NV items ------------------------------------------------------

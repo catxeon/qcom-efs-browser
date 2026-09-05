@@ -311,8 +311,7 @@ fun App(vm: MainViewModel) {
     pendingImport?.let { uri ->
         ImportDialog(
             dir = state.path,
-            initialName = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
-                ?: "file",
+            initialName = remember(uri) { vm.displayName(uri) },
             onConfirm = { name, asItem ->
                 pendingImport = null
                 if (name.isNotBlank()) {
