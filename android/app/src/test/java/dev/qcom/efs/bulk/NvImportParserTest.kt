@@ -65,7 +65,7 @@ class NvImportParserTest {
     @Test
     fun `blocks are processed in document order`() {
         val cmds = parse(
-            """{"sim1":{"/nv/x/":{"a":{"op":"w","data":"01"}},""" +
+            """{"sim1":{"/nv/x/":{"a":{"op":"w","data":"01"}}},""" +
                 """"sim0":{"/nv/x/":{"a":{"op":"w","data":"02"}}}}""",
         )
         assertEquals(
@@ -134,12 +134,12 @@ class NvImportParserTest {
 
     @Test
     fun `non-object path value is rejected`() {
-        expectError("""{"sim0":{"/nv/x/":5}}""", "Expected object for path: /nv/x/")
+        expectError("""{"sim0":{"/nv/x/":"x"}}""", "Expected object for path: /nv/x/")
     }
 
     @Test
     fun `non-object entry value is rejected`() {
-        expectError("""{"sim0":{"/nv/x/":{"a":7}}}""", "Expected object for entry: a")
+        expectError("""{"sim0":{"/nv/x/":{"a":"y"}}}""", "Expected object for entry: a")
     }
 
     @Test
