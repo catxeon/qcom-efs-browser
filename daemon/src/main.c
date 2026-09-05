@@ -11,6 +11,7 @@
  */
 #include "diag.h"
 #include "efs2.h"
+#include "ssr.h"
 #include "util.h"
 
 #include <errno.h>
@@ -28,7 +29,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define QEFSD_VERSION   "1.1.1"
+#define QEFSD_VERSION   "1.2.0"
 #define DEFAULT_SOCKET  "qcom_efsd"
 #define MAX_LINE        (4u * 1024 * 1024)
 #define MAX_INLINE_READ (512u * 1024)
@@ -684,6 +685,13 @@ static void cmd_raw(const char *req, sbuf *o)
     free(rhex);
 }
 
+static void cmd_ssr(sbuf *o)
+{
+    char err[256];
+    if (ssr_trigger(err, sizeof err) < 0) { fail(o, "%s", err); return; }
+    sb_str(o, "{\"ok\":true}");
+}
+
 static void dispatch(const char *req, sbuf *o)
 {
     char cmd[64];
@@ -721,6 +729,15 @@ static void dispatch(const char *req, sbuf *o)
     if (!strcmp(cmd, "shutdown")) {
         if (g_open) { diag_close(&g_diag); g_open = 0; }
         sb_str(o, "{\"ok\":true,\"bye\":true}");
+        return;
+    }
+
+    /* SSR is wedged-modem recovery: it uses neither the EFS session nor the
+     * DIAG transport, so it stays reachable even when open cannot complete.
+     * It still changes modem state, so the write gate holds. */
+    if (!strcmp(cmd, "ssr")) {
+        if (require_write(o) < 0) return;
+        cmd_ssr(o);
         return;
     }
 
@@ -899,7 +916,11 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-socket") && i + 1 < argc)  sockname = argv[++i];
         else if (!strcmp(argv[i], "-verbose"))                 g_verbose = 1;
         else if (!strcmp(argv[i], "-rw"))                      g_readonly = 0;
-        else if (!strcmp(argv[i], "-mock") && i + 1 < argc)    diag_set_mock(argv[++i]);
+        else if (!strcmp(argv[i], "-mock") && i + 1 < argc) {
+            const char *m = argv[++i];
+            diag_set_mock(m);
+            ssr_set_mock(m);
+        }
         else if (!strcmp(argv[i], "-qrtr") && i + 1 < argc) {
             unsigned long node = 0, port = 0;
             if (sscanf(argv[++i], "%lu:%lu", &node, &port) == 2)

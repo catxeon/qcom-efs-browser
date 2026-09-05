@@ -39,7 +39,7 @@ mkdir -p "$(dirname "$out")"
     -fno-strict-aliasing -fstack-protector-strong \
     -Wall -Wextra -Wno-unused-parameter \
     -o "$out" \
-    "$here/src/util.c" "$here/src/diag.c" "$here/src/efs2.c" "$here/src/main.c"
+    "$here/src/util.c" "$here/src/diag.c" "$here/src/efs2.c" "$here/src/ssr.c" "$here/src/main.c"
 
 if command -v llvm-strip >/dev/null 2>&1; then
     llvm-strip "$out" || true

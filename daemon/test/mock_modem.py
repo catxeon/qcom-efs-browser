@@ -12,7 +12,12 @@ optionally preceded, as on SM8850 and newer, by a datagram header
 
     [u16 type = 8][u16 length of the rest]
 
-which the fourth argument turns on.
+The command line is <socket> <log> [reject_hellos] [mode].  reject_hellos
+(argv[3], default 0) is the number of initial DIAG_HELLOs to swallow.  mode
+(argv[4], default "0") is overloaded: "1" turns the datagram header on,
+"0" leaves it off, and "ssr" or "ssr_silent" additionally serve a fake
+vendor SSR service (0xFFE4) on <socket>.ssr -- "ssr" answers every request,
+"ssr_silent" logs them and never answers.
 
 The packet *layouts* are transcribed from qfenix's diag.c -- responses are
 built the way qfenix parses them and requests are parsed the way qfenix builds
@@ -561,7 +566,55 @@ def serve(path, logpath, reject_hellos=0, datagram_header=False):
     log.flush()
 
 
+def serve_ssr(path, logpath, mode):
+    """A fake vendor QMI service (0xFFE4) on its own socket: <mock>.ssr.
+
+    Accepts connections forever (the daemon opens one per ssr command) and,
+    in mode "ssr", answers each request with the 508-byte response shape seen
+    in mtb's log: the kernel-QMI response flag 0x02 plus the request's
+    transaction and message ids echoed back.  The daemon discriminates on
+    that echo alone, not on the flag byte.
+    """
+    if os.path.exists(path):
+        os.unlink(path)
+    log = open(logpath, "w")
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    srv.bind(path)
+    srv.listen(4)
+    log.write("fake ssr service listening on %s (mode %s)\n" % (path, mode))
+    log.flush()
+    print("ssr-ready", flush=True)
+
+    while True:
+        conn, _ = srv.accept()
+        while True:
+            try:
+                blob = conn.recv(65536)
+            except OSError:
+                break
+            if not blob:
+                break
+            log.write("ssr request: %d bytes\n" % len(blob))
+            log.flush()
+            if mode != "ssr" or len(blob) < 5:
+                continue
+            rsp = bytearray(508)
+            rsp[0] = 0x02                 # kernel-QMI response flag
+            rsp[1:3] = blob[1:3]          # transaction id echo
+            rsp[3:5] = blob[3:5]          # message id echo
+            conn.send(bytes(rsp))
+        conn.close()
+
+
 if __name__ == "__main__":
+    import threading
+    mode = sys.argv[4] if len(sys.argv) > 4 else "0"
+    if mode in ("ssr", "ssr_silent"):
+        threading.Thread(
+            target=serve_ssr,
+            args=(sys.argv[1] + ".ssr", sys.argv[2] + ".ssr.log", mode),
+            daemon=True,
+        ).start()
     serve(sys.argv[1], sys.argv[2],
           int(sys.argv[3]) if len(sys.argv) > 3 else 0,
-          len(sys.argv) > 4 and sys.argv[4] == "1")
+          mode == "1")

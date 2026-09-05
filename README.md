@@ -34,6 +34,7 @@ modem's filesystem.
 | Unlock NV writes | the Service Programming Code (`0x41`) raises the DIAG access level for the session |
 | Flush the EFS2 journal | `SYNC_NO_WAIT` / `SYNC_GET_STATUS` (48/49) |
 | Arbitrary DIAG packet | the `raw` command (hex → hex) |
+| Bulk-import NV changes from a JSON file | the mtbtool v2 format (`sim0`/`sim1`/`dualsim` blocks; see the format doc in the mtbtool-android-app repo, `tools/bulk-import-format.md`) |
 | Diagnostics | helper log, receive stats, the transport it found |
 
 **Read-only is on by default** — the helper refuses every command that would
@@ -121,6 +122,7 @@ carries `ok`; on failure it carries `error` and, for EFS operations,
 {"cmd":"nv_read","item":550}
 {"cmd":"nv_write","item":550,"data":"00ff…"}
 {"cmd":"spc","spc":"000000"}          // raise the DIAG access level; unlock NV writes
+{"cmd":"ssr"}                          // Xiaomi-only modem subsystem restart; refused while read-only
 {"cmd":"raw","hex":"4b1300000000"}
 {"cmd":"raw","hex":"…","match":false} // return the first frame that arrives, whatever it is
 {"cmd":"readonly","on":false}
@@ -139,7 +141,7 @@ uses the same QRTR framing instead of the real bus. The end-to-end test is built
 on it.
 
 ```bash
-gcc -std=gnu11 -O2 -Wall -Wextra -o /tmp/qcom-efsd-host daemon/src/util.c daemon/src/diag.c daemon/src/efs2.c daemon/src/main.c
+gcc -std=gnu11 -O2 -Wall -Wextra -o /tmp/qcom-efsd-host daemon/src/util.c daemon/src/diag.c daemon/src/efs2.c daemon/src/ssr.c daemon/src/main.c
 python3 daemon/test/run_tests.py /tmp/qcom-efsd-host
 ```
 
@@ -168,7 +170,8 @@ modem, a `shutdown` that must actually terminate the process, a security-locked
 NV write, and the SPC unlock are covered too.
 
 What the test does not cover: the availability of the QRTR bus and the modem's
-real answers — only hardware. 75 end-to-end checks against the mock.
+real answers — only hardware. 80 end-to-end checks against the mock (including
+the Xiaomi-only `ssr` restart command against a fake 0xFFE4 endpoint).
 
 ### Debugging on a live device without the app
 
@@ -358,6 +361,7 @@ daemon/
   build.sh              builds the aarch64 binary with the NDK
   src/diag.c|h          transport: DIAG over QRTR
   src/efs2.c|h          EFS2 operations and NV items
+  src/ssr.c|h           Xiaomi modem restart via the vendor QMI service
   src/main.c            the unix socket, the JSON protocol, recursive operations
   test/mock_modem.py    a fake modem: EFS2 + NV in QRTR frames over a socket
   test/run_tests.py     the end-to-end test of the daemon against the mock
