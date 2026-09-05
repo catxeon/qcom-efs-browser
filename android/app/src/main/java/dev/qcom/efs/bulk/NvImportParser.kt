@@ -106,6 +106,7 @@ object NvImportParser {
         if (slot == 0 || path.endsWith(SUBSCRIPTION_SUFFIX)) path
         else path + SUBSCRIPTION_SUFFIX
 
+    /** Throws unless [hexStr] is even-length hex; nothing is returned — [BulkCommand.dataHex] keeps the input verbatim. */
     private fun parseHex(hexStr: String, context: String) {
         if (hexStr.length % 2 != 0) {
             throw NvImportParseException("Invalid hex data (odd length) for: $context")
@@ -115,6 +116,7 @@ object NvImportParser {
         }
     }
 
+    // Byte-identical port of mtbtool's NvImportParser JSON section (same dialect: objects/strings only; same error strings). Do not swap for org.json.
     // ── Minimal JSON parser (objects only, strings and nested objects) ──────────
 
     /** LinkedHashMap preserving insertion order */
