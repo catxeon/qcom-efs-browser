@@ -50,18 +50,24 @@ class Client:
         return json.loads(line)
 
 
-def spawn(daemon_bin, tmp, tag, reject_hellos=0, datagram_header=False, extra=()):
+def spawn(daemon_bin, tmp, tag, reject_hellos=0, datagram_header=False, extra=(),
+          ssr_mode=None):
     """Starts a mock modem plus a daemon wired to it; returns (mock, daemon, client)."""
     mock_sock = os.path.join(tmp, "modem-%s.sock" % tag)
     mock_log = os.path.join(tmp, "modem-%s.log" % tag)
     name = "%s_%s" % (SOCKET_NAME, tag)
 
-    mock = subprocess.Popen(
-        [sys.executable, os.path.join(HERE, "mock_modem.py"),
-         mock_sock, mock_log, str(reject_hellos), "1" if datagram_header else "0"],
-        stdout=subprocess.PIPE)
-    if mock.stdout.readline().strip() != b"ready":
-        raise RuntimeError("mock modem failed to start")
+    args = [sys.executable, os.path.join(HERE, "mock_modem.py"),
+            mock_sock, mock_log, str(reject_hellos),
+            ssr_mode if ssr_mode else ("1" if datagram_header else "0")]
+    mock = subprocess.Popen(args, stdout=subprocess.PIPE)
+    line = mock.stdout.readline().strip()
+    # "ssr-ready" is printed by the SSR responder's own thread, so the two
+    # readiness lines can arrive in either order; skip the extra ones.
+    while line == b"ssr-ready":
+        line = mock.stdout.readline().strip()
+    if line != b"ready":
+        raise RuntimeError("mock modem failed to start: %r" % line)
 
     log = open(os.path.join(tmp, "daemon-%s.log" % tag), "w+")
     daemon = subprocess.Popen(
@@ -120,6 +126,53 @@ def test_transport(daemon_bin, tmp):
         mock.kill()
 
 
+def test_ssr(daemon_bin, tmp):
+    """The modem-restart replay: guarded, answered, and honest about absence."""
+
+    # -- refused while read-only ------------------------------------------
+    mock, daemon, c, _ = spawn(daemon_bin, tmp, "ssr-ro", ssr_mode="ssr")
+    try:
+        check("ssr starts with the session open", c.cmd(cmd="open").get("ok"))
+        r = c.cmd(cmd="ssr")
+        check("ssr is refused while read-only", r.get("ok") is False, r)
+    finally:
+        daemon.kill(); mock.kill()
+
+    # -- answered ----------------------------------------------------------
+    mock, daemon, c, _ = spawn(daemon_bin, tmp, "ssr-ok", ssr_mode="ssr")
+    try:
+        c.cmd(cmd="open")
+        c.cmd(cmd="readonly", on=False)
+        r = c.cmd(cmd="ssr")
+        check("ssr succeeds when the service answers", r.get("ok") is True, r)
+    finally:
+        daemon.kill(); mock.kill()
+
+    # -- the service never answers ----------------------------------------
+    mock, daemon, c, _ = spawn(daemon_bin, tmp, "ssr-silent", ssr_mode="ssr_silent")
+    try:
+        c.cmd(cmd="open")
+        c.cmd(cmd="readonly", on=False)
+        r = c.cmd(cmd="ssr")
+        check("a silent ssr service reports no response",
+              r.get("ok") is False and "ssr_no_response" in str(r.get("error")), r)
+    finally:
+        daemon.kill(); mock.kill()
+
+    # -- the service is not published (every non-Xiaomi device) ------------
+    # In mock mode the fake 0xFFE4 endpoint lives on <mock>.ssr, so its
+    # absence surfaces as the failed connect to that socket.
+    mock, daemon, c, _ = spawn(daemon_bin, tmp, "ssr-missing")
+    try:
+        c.cmd(cmd="open")
+        c.cmd(cmd="readonly", on=False)
+        r = c.cmd(cmd="ssr")
+        check("a missing ssr service says so",
+              r.get("ok") is False and ".ssr" in str(r.get("error")), r)
+    finally:
+        daemon.kill(); mock.kill()
+
+
 def main():
     daemon_bin = sys.argv[1]
     tmp = tempfile.mkdtemp(prefix="efs-test-")
@@ -157,6 +210,7 @@ def main():
         run(client, tmp)
         print()
         test_transport(daemon_bin, tmp)
+        test_ssr(daemon_bin, tmp)
     finally:
         try:
             client.cmd(cmd="shutdown")
