@@ -8,7 +8,9 @@ import dev.qcom.efs.bulk.BulkCommand
 import dev.qcom.efs.bulk.BulkOp
 import dev.qcom.efs.bulk.NvImportParseException
 import dev.qcom.efs.bulk.NvImportParser
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -349,27 +351,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- bulk import ----------------------------------------------------
 
+    private var bulkRun: Job? = null
+
     fun startBulkImport(uri: Uri) = viewModelScope.launch {
         val name = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: "file"
+        var readError: String? = null
         val text = withContext(Dispatchers.IO) {
-            runCatching {
+            try {
                 getApplication<Application>().contentResolver.openInputStream(uri)
                     ?.bufferedReader()?.use { it.readText() }
-            }.getOrNull()
+            } catch (t: Throwable) {
+                readError = describe(t)
+                null
+            }
         }
         if (text == null) {
             _state.update {
-                it.copy(bulk = BulkState.Preview(name, emptyList(), error = "The selected file could not be read"))
+                it.copy(bulk = BulkState.Preview(
+                    name, emptyList(),
+                    error = "The selected file could not be read" +
+                            (readError?.let { c -> ": $c" } ?: "")))
             }
             return@launch
         }
-        _state.update {
-            try {
-                it.copy(bulk = BulkState.Preview(name, NvImportParser.parse(text)))
-            } catch (e: NvImportParseException) {
+        val commands = try {
+            NvImportParser.parse(text)
+        } catch (e: NvImportParseException) {
+            _state.update {
                 it.copy(bulk = BulkState.Preview(name, emptyList(), error = e.message))
             }
+            return@launch
         }
+        _state.update { it.copy(bulk = BulkState.Preview(name, commands)) }
     }
 
     fun closeBulkImport() = _state.update { it.copy(bulk = null) }
@@ -381,30 +394,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * aborts the run and marks the remaining commands as skipped.
      */
     fun runBulkImport(spc: String) {
+        if (bulkRun?.isActive == true) return
         val preview = _state.value.bulk as? BulkState.Preview ?: return
         if (preview.commands.isEmpty()) return
-        viewModelScope.launch {
+        bulkRun = viewModelScope.launch {
             val cmds = preview.commands
 
+            // Every bulk-state write below is guarded: if the dialog was
+            // closed mid-run, the update must not resurrect it.
             if (cmds.any { it.op == BulkOp.WRITE }) {
                 val unlocked = try {
                     repo.spcUnlock(spc)
                 } catch (t: Throwable) {
-                    _state.update {
-                        it.copy(bulk = preview.copy(error = "SPC pre-flight failed: ${describe(t)}"))
+                    _state.update { s ->
+                        if (s.bulk == null) s
+                        else s.copy(bulk = preview.copy(error = "SPC pre-flight failed: ${describe(t)}"))
                     }
                     return@launch
                 }
                 if (!unlocked) {
-                    _state.update {
-                        it.copy(bulk = preview.copy(
-                            error = "The modem rejected the SPC - import aborted."))
+                    _state.update { s ->
+                        if (s.bulk == null) s
+                        else s.copy(bulk = preview.copy(
+                            error = "The modem rejected the SPC - import aborted"))
                     }
                     return@launch
                 }
             }
 
-            _state.update { it.copy(bulk = BulkState.Running(preview.fileName, cmds, 0, emptyList())) }
+            _state.update { s ->
+                if (s.bulk == null) s
+                else s.copy(bulk = BulkState.Running(preview.fileName, cmds, 0, emptyList()))
+            }
 
             val results = mutableListOf<BulkResult>()
             var aborted = false
@@ -416,7 +437,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val result = try {
                     when (cmd.op) {
                         BulkOp.WRITE -> {
-                            repo.writeFile(cmd.efsPath, hexBytes(cmd.dataHex!!), item = null)
+                            repo.writeFile(cmd.efsPath, parseHexText(cmd.dataHex!!), item = null)
                             BulkResult(cmd.op, cmd.efsPath, cmd.simTag, ok = true)
                         }
                         BulkOp.DELETE -> {
@@ -425,34 +446,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                 } catch (t: Throwable) {
-                    if (t is EfsException && !repo.connected) aborted = true
+                    if (t is CancellationException) throw t
+                    if (t is EfsException &&
+                        (!repo.connected || t.message?.contains("closed the connection") == true)
+                    ) aborted = true
                     BulkResult(cmd.op, cmd.efsPath, cmd.simTag, ok = false, error = describe(t))
                 }
                 results.add(result)
-                _state.update {
-                    it.copy(bulk = BulkState.Running(preview.fileName, cmds, results.size, results.toList()))
+                _state.update { s ->
+                    if (s.bulk == null) s
+                    else s.copy(bulk = BulkState.Running(preview.fileName, cmds, results.size, results.toList()))
                 }
             }
 
             var summary: String? = null
-            if (results.any { it.ok }) {
+            if (!aborted && results.any { it.ok }) {
                 try {
                     repo.sync()
                 } catch (t: Throwable) {
+                    if (t is CancellationException) throw t
                     summary = "journal flush failed: ${describe(t)}"
                 }
             }
-            _state.update { it.copy(bulk = BulkState.Done(results, summary)) }
+            _state.update { s ->
+                if (s.bulk == null) s else s.copy(bulk = BulkState.Done(results.toList(), summary))
+            }
         }
     }
 
     fun modemSsr() = work("restarting the modem") {
         repo.modemSsr()
         _state.update { it.copy(toast = "SSR issued - waiting for the modem to come back") }
-    }
-
-    private fun hexBytes(hex: String): ByteArray = ByteArray(hex.length / 2) { i ->
-        ((Character.digit(hex[2 * i], 16) shl 4) or Character.digit(hex[2 * i + 1], 16)).toByte()
     }
 
     // ---- mutations -----------------------------------------------------
