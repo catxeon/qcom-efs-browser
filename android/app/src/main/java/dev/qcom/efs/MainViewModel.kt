@@ -1,6 +1,7 @@
 package dev.qcom.efs
 
 import android.app.Application
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -8,6 +9,8 @@ import dev.qcom.efs.bulk.BulkCommand
 import dev.qcom.efs.bulk.BulkOp
 import dev.qcom.efs.bulk.NvImportParseException
 import dev.qcom.efs.bulk.NvImportParser
+import dev.qcom.efs.update.Release
+import dev.qcom.efs.update.UpdateChecker
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -50,6 +53,9 @@ data class EditorData(
 
 /** Anything larger is better edited on a computer than in a text field. */
 private const val MAX_EDIT = 64 * 1024
+
+/** Preference key holding the one release the user chose not to be reminded about. */
+private const val KEY_SKIPPED_VERSION = "skipped_version"
 
 /** One executed bulk command, shown in the dialog's result list. */
 data class BulkResult(
@@ -108,6 +114,8 @@ data class UiState(
     val nvError: String? = null,
     /** Non-null while the bulk-import dialog is open. */
     val bulk: BulkState? = null,
+    /** Non-null while the "new version available" dialog is open. */
+    val update: Release? = null,
     /** Set once the session is closed and the activity should finish. */
     val exitAfterDisconnect: Boolean = false,
 )
@@ -118,6 +126,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
+
+    private val prefs by lazy {
+        getApplication<Application>().getSharedPreferences("updates", Context.MODE_PRIVATE)
+    }
+
+    /** The installed versionName, read from the package rather than BuildConfig. */
+    private val installedVersion: String by lazy {
+        val app = getApplication<Application>()
+        runCatching {
+            app.packageManager.getPackageInfo(app.packageName, 0).versionName
+        }.getOrNull() ?: "0"
+    }
+
+    // Must stay below every property it touches: viewModelScope dispatches on
+    // Main.immediate, so the check runs synchronously during construction and
+    // a lazy declared further down would still be null.
+    init {
+        checkForUpdates(manual = false)
+    }
 
     // ---- plumbing ------------------------------------------------------
 
@@ -493,6 +520,47 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 else -> s.copy(toast = msg)
             }
         }
+    }
+
+    // ---- update check ---------------------------------------------------
+
+    /**
+     * Asks GitHub for the newest release. The automatic check on startup stays
+     * quiet unless there is something newer -- being offline is not worth a
+     * toast -- while a check the user asked for reports every outcome.
+     */
+    fun checkForUpdates(manual: Boolean) {
+        viewModelScope.launch {
+            val current = installedVersion
+            val release = try {
+                UpdateChecker.latestNewerThan(current)
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                if (manual) _state.update { it.copy(toast = describe(t)) }
+                return@launch
+            }
+            if (release == null) {
+                if (manual) {
+                    _state.update { it.copy(toast = "Version $current is the latest release") }
+                }
+                return@launch
+            }
+            // A version the user waved away stays away, but only automatically.
+            if (!manual && prefs.getString(KEY_SKIPPED_VERSION, null) == release.version) {
+                return@launch
+            }
+            _state.update { it.copy(update = release) }
+        }
+    }
+
+    fun dismissUpdate() = _state.update { it.copy(update = null) }
+
+    /** Closes the dialog and stops the automatic check from offering this version again. */
+    fun skipUpdate() {
+        _state.value.update?.let {
+            prefs.edit().putString(KEY_SKIPPED_VERSION, it.version).apply()
+        }
+        dismissUpdate()
     }
 
     // ---- mutations -----------------------------------------------------

@@ -1,6 +1,7 @@
 package dev.qcom.efs
 
 import android.app.Activity
+import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -37,6 +38,7 @@ import java.util.Date
 import java.util.Locale
 
 import dev.qcom.efs.bulk.ui.BulkImportDialog
+import dev.qcom.efs.update.Release
 
 private val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
 
@@ -175,6 +177,11 @@ fun App(vm: MainViewModel) {
                             leadingIcon = { Icon(Icons.Filled.BugReport, null) },
                             onClick = { menu = false; vm.refreshLog(); showLog = true },
                         )
+                        DropdownMenuItem(
+                            text = { Text("Check for updates") },
+                            leadingIcon = { Icon(Icons.Filled.SystemUpdate, null) },
+                            onClick = { menu = false; vm.checkForUpdates(manual = true) },
+                        )
                         if (state.phase == Phase.READY) {
                             DropdownMenuItem(
                                 text = { Text("Disconnect") },
@@ -249,6 +256,23 @@ fun App(vm: MainViewModel) {
     if (showNv) NvDialog(state, vm) { showNv = false }
     if (showRaw) RawDialog(vm) { showRaw = false }
 
+    state.update?.let { release ->
+        UpdateDialog(
+            release = release,
+            onDownload = {
+                vm.dismissUpdate()
+                runCatching {
+                    ctx.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse(release.url))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+            },
+            onSkip = { vm.skipUpdate() },
+            onDismiss = { vm.dismissUpdate() },
+        )
+    }
+
     state.bulk?.let { bulk ->
         BulkImportDialog(
             state = bulk,
@@ -320,6 +344,39 @@ fun App(vm: MainViewModel) {
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
         )
     }
+}
+
+/** Offers the newer release found on GitHub; "Skip" silences it for that version only. */
+@Composable
+private fun UpdateDialog(
+    release: Release,
+    onDownload: () -> Unit,
+    onSkip: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Filled.SystemUpdate, null) },
+        title = { Text("Version ${release.version} is out") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("A newer release is available on GitHub.")
+                if (release.notes.isNotBlank()) {
+                    HorizontalDivider()
+                    Column(Modifier.heightIn(max = 260.dp).verticalScroll(rememberScrollState())) {
+                        Text(release.notes, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDownload) { Text("Open release") } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onSkip) { Text("Skip") }
+                TextButton(onClick = onDismiss) { Text("Later") }
+            }
+        },
+    )
 }
 
 @Composable

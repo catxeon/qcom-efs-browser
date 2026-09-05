@@ -34,6 +34,7 @@ modem's filesystem.
 | Unlock NV writes | the Service Programming Code (`0x41`) raises the DIAG access level for the session |
 | Flush the EFS2 journal | `SYNC_NO_WAIT` / `SYNC_GET_STATUS` (48/49) |
 | Arbitrary DIAG packet | the `raw` command (hex → hex) |
+| Tell you a new version is out | asks the GitHub releases API for the newest tag and offers it once, with a "skip this version" |
 | Bulk-import NV changes from a JSON file | the mtbtool v2 format (`sim0`/`sim1`/`dualsim` blocks; see the format doc in the mtbtool-android-app repo, `tools/bulk-import-format.md`) |
 | Diagnostics | helper log, receive stats, the transport it found |
 
@@ -54,6 +55,11 @@ change the modem until the lock in the toolbar is cleared by hand.
   current EFS are essentially gone; add a second target in `daemon/build.sh` if
   you need one).
 * Android 8.0+ (minSdk 26).
+* `INTERNET`, and only for the update check. The app asks
+  `api.github.com/repos/catxeon/qcom-efs-browser/releases/latest` for the newest
+  tag, sends nothing about the phone or the modem, and stays silent when it is
+  offline. Nothing else in the app touches the network; deny it and everything
+  but that one dialog still works.
 
 ---
 
@@ -382,6 +388,8 @@ android/
     EfsRepository.kt    operations + SAF + zip
     MainViewModel.kt    screen state
     Ui.kt               the Compose interface
+    bulk/               the mtbtool JSON import parser and its dialog
+    update/             the GitHub release check behind the "new version" dialog
 ```
 
 ## License
