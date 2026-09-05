@@ -1,8 +1,8 @@
 package dev.qcom.efs.bulk
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Test
 
 class NvImportParserTest {
@@ -63,7 +63,7 @@ class NvImportParserTest {
     }
 
     @Test
-    fun `blocks are processed in document order and later writes win`() {
+    fun `blocks are processed in document order`() {
         val cmds = parse(
             """{"sim1":{"/nv/x/":{"a":{"op":"w","data":"01"}},""" +
                 """"sim0":{"/nv/x/":{"a":{"op":"w","data":"02"}}}}""",
@@ -89,15 +89,32 @@ class NvImportParserTest {
         assertEquals(listOf(delete("/nv/x/a")), cmds)
     }
 
+    @Test
+    fun `pretty-printed json is accepted`() {
+        val cmds = parse(
+            """
+            {
+              "dualsim": {
+                "/nv/x/": {
+                  "a": { "op": "w", "data": "ff" }
+                }
+              }
+            }
+            """.trimIndent(),
+        )
+        assertEquals(listOf(write("/nv/x/a", "ff", "SIM0"), write("/nv/x/a_Subscription01", "ff", "SIM1")), cmds)
+    }
+
+    @Test
+    fun `empty slot block is a valid no-op`() {
+        assertEquals(emptyList<BulkCommand>(), parse("""{"sim0":{}}"""))
+    }
+
     // ---- mtbtool-identical error cases -----------------------------------
 
-    private fun expectError(json: String, contains: String) {
-        try {
-            parse(json)
-            fail("expected NvImportParseException")
-        } catch (e: NvImportParseException) {
-            assertTrue("message was: ${e.message}", e.message!!.contains(contains))
-        }
+    private fun expectError(json: String, expected: String) {
+        val e = assertThrows(NvImportParseException::class.java) { parse(json) }
+        assertTrue("message was: ${e.message}", e.message!!.contains(expected))
     }
 
     @Test
