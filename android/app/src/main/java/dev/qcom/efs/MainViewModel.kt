@@ -62,6 +62,9 @@ private const val MAX_EDIT = 64 * 1024
 /** Preference key holding the one release the user chose not to be reminded about. */
 private const val KEY_SKIPPED_VERSION = "skipped_version"
 
+/** SIM slot the Disable-features dialog opens on. */
+private const val DEFAULT_FEATURE_SLOT = 0
+
 /** One executed bulk command, shown in the dialog's result list. */
 data class BulkResult(
     val op: BulkOp,
@@ -407,6 +410,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val featureChecker by lazy { FeatureChecker(EfsFeatureAccess(repo)) }
     private var featuresJob: Job? = null
 
+    // Bulk import and the feature toggles both write NV items, so the guards
+    // on their entry points keep them mutually exclusive: only one
+    // NV-writing actor may run at a time.
+
     fun startBulkImport(uri: Uri) = viewModelScope.launch {
         val name = repo.displayName(uri)
         var readError: String? = null
@@ -449,6 +456,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun runBulkImport(spc: String) {
         if (bulkRun?.isActive == true) return
+        if (featuresJob?.isActive == true) return
         val preview = _state.value.bulk as? BulkState.Preview ?: return
         if (preview.commands.isEmpty()) return
         bulkRun = viewModelScope.launch {
@@ -542,11 +550,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun routeDialogNote(message: String) {
         _state.update { s ->
-            when {
-                s.bulk is BulkState.Preview -> s.copy(bulk = (s.bulk as BulkState.Preview).copy(note = message))
-                s.bulk is BulkState.Done -> s.copy(bulk = (s.bulk as BulkState.Done).copy(note = message))
-                s.features is FeaturesState.Ready -> s.copy(features = (s.features as FeaturesState.Ready).copy(note = message))
-                else -> s.copy(toast = message)
+            // When both dialogs are somehow open, the bulk dialog wins.
+            when (val bulk = s.bulk) {
+                is BulkState.Preview -> s.copy(bulk = bulk.copy(note = message))
+                is BulkState.Done -> s.copy(bulk = bulk.copy(note = message))
+                else -> when (val f = s.features) {
+                    is FeaturesState.Ready -> s.copy(features = f.copy(note = message))
+                    else -> s.copy(toast = message)
+                }
             }
         }
     }
@@ -555,24 +566,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openFeatures() {
         if (featuresJob?.isActive == true) return
+        if (bulkRun?.isActive == true) return
         featuresJob = viewModelScope.launch {
-            _state.update { it.copy(features = FeaturesState.Checking(0)) }
-            checkFeatures(0)
+            _state.update { it.copy(features = FeaturesState.Checking(DEFAULT_FEATURE_SLOT)) }
+            checkFeatures(DEFAULT_FEATURE_SLOT)
         }
     }
 
     fun closeFeatures() {
+        // Cancelling mid-check is safe: the check only reads, so stopping it
+        // between exchanges is harmless.  Never cancel during Writing or
+        // Restoring - a modification must run to completion so the modem is
+        // not left half-written.
+        if (_state.value.features is FeaturesState.Checking) featuresJob?.cancel()
         _state.update { it.copy(features = null) }
     }
 
     fun setFeatureSimSlot(slot: Int) {
         if (featuresJob?.isActive == true) return
+        if (bulkRun?.isActive == true) return
         featuresJob = viewModelScope.launch {
+            var transitioned = false
             _state.update { s ->
-                val f = s.features as? FeaturesState.Ready ?: return@update s
+                if (s.features !is FeaturesState.Ready) return@update s
+                transitioned = true
                 s.copy(features = FeaturesState.Checking(slot))
             }
-            checkFeatures(slot)
+            // Only re-check when the dialog actually transitioned; a closed
+            // dialog must not trigger I/O.
+            if (transitioned) checkFeatures(slot)
         }
     }
 
@@ -590,22 +612,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun disableFeature(id: String, spc: String) {
         if (featuresJob?.isActive == true) return
+        if (bulkRun?.isActive == true) return
         featuresJob = viewModelScope.launch {
             val ready = _state.value.features as? FeaturesState.Ready ?: return@launch
             val feature = ALL_FEATURES.first { it.id == id }
-            if (!ready.statuses[id].let { it is FeatureStatus.CanDisable }) return@launch
-            // SPC pre-flight before any modification.
-            val unlocked = try {
-                withContext(Dispatchers.IO) { repo.spcUnlock(spc) }
-            } catch (t: Throwable) {
-                if (t is CancellationException) throw t
-                noteFeatures("SPC pre-flight failed: ${describe(t)}")
-                return@launch
-            }
-            if (!unlocked) {
-                noteFeatures("The modem rejected the SPC - feature not changed.")
-                return@launch
-            }
+            if (ready.statuses[id] !is FeatureStatus.CanDisable) return@launch
+            if (!ensureSpc(spc, "The modem rejected the SPC - feature not changed.", ::noteFeatures)) return@launch
             val slot = ready.simSlot
             // Capture originals right before modifying.
             val capture = try {
@@ -634,12 +646,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 noteFeatures(error)
                 return@launch
             }
+            val captured = capture.originals[feature.id] ?: return@launch
             _state.update { s ->
                 val f = s.features as? FeaturesState.Ready ?: return@update s
                 s.copy(
                     features = f.copy(
                         statuses = f.statuses + (feature.id to FeatureStatus.AlreadyDisabled),
-                        originals = f.originals + (feature.id to capture.originals[feature.id]!!),
+                        originals = f.originals + (feature.id to captured),
+                        // The new state supersedes any earlier error note.
+                        note = null,
                     ),
                 )
             }
@@ -648,22 +663,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun restoreFeature(id: String, spc: String) {
         if (featuresJob?.isActive == true) return
+        if (bulkRun?.isActive == true) return
         featuresJob = viewModelScope.launch {
             val ready = _state.value.features as? FeaturesState.Ready ?: return@launch
             val feature = ALL_FEATURES.first { it.id == id }
             val originals = ready.originals[id] ?: return@launch
-            if (!ready.statuses[id].let { it is FeatureStatus.AlreadyDisabled || it is FeatureStatus.WriteError }) return@launch
-            val unlocked = try {
-                withContext(Dispatchers.IO) { repo.spcUnlock(spc) }
-            } catch (t: Throwable) {
-                if (t is CancellationException) throw t
-                noteFeatures("SPC pre-flight failed: ${describe(t)}")
-                return@launch
-            }
-            if (!unlocked) {
-                noteFeatures("The modem rejected the SPC - nothing restored.")
-                return@launch
-            }
+            val status = ready.statuses[id]
+            if (status !is FeatureStatus.AlreadyDisabled && status !is FeatureStatus.WriteError) return@launch
+            if (!ensureSpc(spc, "The modem rejected the SPC - nothing restored.", ::noteFeatures)) return@launch
             updateStatus(feature.id, FeatureStatus.Restoring)
             val error = try {
                 withContext(Dispatchers.IO) { featureChecker.restore(feature, originals, ready.simSlot) }
@@ -696,6 +703,31 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
         }
+    }
+
+    /**
+     * SPC pre-flight before any modification.  Reports failure through
+     * [onReject] - the unlock's exception, or [rejectionMessage] when the
+     * modem rejected the code (each caller keeps its own wording) - and
+     * returns false so the caller can bail out.
+     */
+    private suspend fun ensureSpc(
+        spc: String,
+        rejectionMessage: String,
+        onReject: (String) -> Unit,
+    ): Boolean {
+        val unlocked = try {
+            withContext(Dispatchers.IO) { repo.spcUnlock(spc) }
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            onReject("SPC pre-flight failed: ${describe(t)}")
+            return false
+        }
+        if (!unlocked) {
+            onReject(rejectionMessage)
+            return false
+        }
+        return true
     }
 
     private fun updateStatus(id: String, status: FeatureStatus) {
