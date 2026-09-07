@@ -125,6 +125,7 @@ private fun ReadyBody(
 ) {
     val acting = state.statuses.values.any { it is FeatureStatus.Writing }
     var pendingDisable by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var suppressAfterDisable by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = { if (!acting) onDismiss() },
@@ -250,7 +251,10 @@ private fun ReadyBody(
 
     pendingDisable?.let { (id, spc) ->
         AlertDialog(
-            onDismissRequest = { pendingDisable = null },
+            onDismissRequest = {
+                suppressAfterDisable = false
+                pendingDisable = null
+            },
             title = { Text("Disable this feature?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -260,8 +264,8 @@ private fun ReadyBody(
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(
-                            checked = !state.warnBeforeDisable,
-                            onCheckedChange = { if (it) onSuppressDisableWarning() },
+                            checked = suppressAfterDisable,
+                            onCheckedChange = { suppressAfterDisable = it },
                         )
                         Text("Don't warn me again")
                     }
@@ -269,12 +273,18 @@ private fun ReadyBody(
             },
             confirmButton = {
                 TextButton(onClick = {
+                    val suppress = suppressAfterDisable
+                    suppressAfterDisable = false
                     pendingDisable = null
+                    if (suppress) onSuppressDisableWarning()
                     onDisable(id, spc)
                 }) { Text("Turn off") }
             },
             dismissButton = {
-                TextButton(onClick = { pendingDisable = null }) { Text("Cancel") }
+                TextButton(onClick = {
+                    suppressAfterDisable = false
+                    pendingDisable = null
+                }) { Text("Cancel") }
             },
         )
     }
