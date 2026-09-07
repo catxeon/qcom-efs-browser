@@ -25,6 +25,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -191,15 +192,24 @@ private fun ResultList(results: List<BulkResult>) {
     }
     LazyColumn(Modifier.heightIn(max = 240.dp)) {
         items(results) { r ->
-            val prefix = buildString {
-                append(if (r.op == BulkOp.WRITE) "W" else "D")
-                append(" ")
-                append(r.simTag)
+            // Palette ported from mtbtool's import log (write/delete + SIM0/SIM1).
+            val opColor = if (r.op == BulkOp.WRITE) Color(0xFF4FC3F7) else Color(0xFFFF8A65)
+            val simColor = when (r.simTag) {
+                "SIM0" -> Color(0xFFCE93D8)
+                "SIM1" -> Color(0xFF80CBC4)
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    prefix,
+                    if (r.op == BulkOp.WRITE) "W" else "D",
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = opColor,
+                    maxLines = 1,
+                )
+                Text(
+                    r.simTag,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    color = simColor,
                     maxLines = 1,
                 )
                 Text(
