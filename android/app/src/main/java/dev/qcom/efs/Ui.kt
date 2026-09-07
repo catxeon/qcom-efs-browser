@@ -295,8 +295,8 @@ fun App(vm: MainViewModel) {
         FeaturesDialog(
             state = features,
             readOnly = state.readOnly,
+            busy = state.busy,
             onSimSlot = { slot -> vm.setFeatureSimSlot(slot) },
-            onSpcUnlock = { spc -> vm.spcUnlock(spc) },
             onEnableWrites = { vm.toggleReadOnly() },
             onDisable = { id, spc -> vm.disableFeature(id, spc) },
             onSuppressDisableWarning = { vm.suppressDisableWarning() },

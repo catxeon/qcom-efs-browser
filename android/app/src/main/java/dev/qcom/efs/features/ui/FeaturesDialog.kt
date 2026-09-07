@@ -17,11 +17,10 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,41 +32,20 @@ import dev.qcom.efs.FeaturesState
 import dev.qcom.efs.features.FeatureStatus
 import dev.qcom.efs.features.ALL_FEATURES
 
-@Composable
-private fun StatusChip(status: FeatureStatus?) {
-    val (text, color) = when (status) {
-        is FeatureStatus.AlreadyDisabled -> "disabled" to MaterialTheme.colorScheme.primary
-        is FeatureStatus.CanDisable -> "active" to MaterialTheme.colorScheme.onSurfaceVariant
-        is FeatureStatus.Writing -> "…" to MaterialTheme.colorScheme.tertiary
-        is FeatureStatus.WriteError, is FeatureStatus.ReadError -> "error" to MaterialTheme.colorScheme.error
-        null -> "?" to MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelMedium,
-        color = color,
-    )
-}
+private const val DEFAULT_SPC = "000000"
 
 @Composable
 fun FeaturesDialog(
     state: FeaturesState,
     readOnly: Boolean,
+    busy: Boolean,
     onSimSlot: (Int) -> Unit,
-    onSpcUnlock: (String) -> Unit,
     onEnableWrites: () -> Unit,
     onDisable: (id: String, spc: String) -> Unit,
     onSuppressDisableWarning: () -> Unit,
     onSsr: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var spc by remember { mutableStateOf("000000") }
-    var ssrBusy by remember { mutableStateOf(false) }
-    val note = (state as? FeaturesState.Ready)?.note
-    LaunchedEffect(note) {
-        if (note != null) ssrBusy = false
-    }
-
     when (state) {
         is FeaturesState.Checking -> AlertDialog(
             onDismissRequest = onDismiss,
@@ -91,13 +69,9 @@ fun FeaturesDialog(
 
         is FeaturesState.Ready -> ReadyBody(
             state = state,
-            spc = spc,
-            ssrBusy = ssrBusy,
-            onSpcChange = { spc = it },
-            onSsrBusyChange = { ssrBusy = it },
+            busy = busy,
             readOnly = readOnly,
             onSimSlot = onSimSlot,
-            onSpcUnlock = onSpcUnlock,
             onEnableWrites = onEnableWrites,
             onDisable = onDisable,
             onSuppressDisableWarning = onSuppressDisableWarning,
@@ -110,13 +84,9 @@ fun FeaturesDialog(
 @Composable
 private fun ReadyBody(
     state: FeaturesState.Ready,
-    spc: String,
-    ssrBusy: Boolean,
-    onSpcChange: (String) -> Unit,
-    onSsrBusyChange: (Boolean) -> Unit,
+    busy: Boolean,
     readOnly: Boolean,
     onSimSlot: (Int) -> Unit,
-    onSpcUnlock: (String) -> Unit,
     onEnableWrites: () -> Unit,
     onDisable: (String, String) -> Unit,
     onSuppressDisableWarning: () -> Unit,
@@ -182,18 +152,25 @@ private fun ReadyBody(
                                     )
                                 }
                             }
-                            StatusChip(status)
+                            if (status is FeatureStatus.Writing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.padding(4.dp),
+                                    strokeWidth = 3.dp,
+                                )
+                            } else {
+                                Switch(checked = status is FeatureStatus.AlreadyDisabled, onCheckedChange = null)
+                            }
                             val canDisable =
                                 (status is FeatureStatus.CanDisable || status is FeatureStatus.WriteError) &&
-                                    !readOnly && !acting && spc.length == 6
+                                    !readOnly && !acting
                             when {
                                 status is FeatureStatus.Writing -> {}
                                 canDisable -> OutlinedButton(
                                     onClick = {
                                         if (state.warnBeforeDisable) {
-                                            pendingDisable = feature.id to spc
+                                            pendingDisable = feature.id to DEFAULT_SPC
                                         } else {
-                                            onDisable(feature.id, spc)
+                                            onDisable(feature.id, DEFAULT_SPC)
                                         }
                                     },
                                     contentPadding = PaddingValues(horizontal = 12.dp),
@@ -204,22 +181,6 @@ private fun ReadyBody(
                     }
                 }
                 HorizontalDivider()
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    OutlinedTextField(
-                        value = spc,
-                        onValueChange = { onSpcChange(it.filter(Char::isDigit).take(6)) },
-                        label = { Text("SPC") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(
-                        onClick = { onSpcUnlock(spc) },
-                        enabled = spc.length == 6 && !acting,
-                    ) { Text("Test the SPC") }
-                }
                 state.note?.let { note ->
                     Text(
                         text = note,
@@ -234,13 +195,10 @@ private fun ReadyBody(
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Button(
-                        onClick = {
-                            onSsrBusyChange(true)
-                            onSsr()
-                        },
-                        enabled = !ssrBusy && !acting && !readOnly,
+                        onClick = { onSsr() },
+                        enabled = !busy && !acting && !readOnly,
                         modifier = Modifier.fillMaxWidth(),
-                    ) { Text(if (ssrBusy) "SSR issued…" else "Restart modem (SSR)") }
+                    ) { Text("Restart modem (SSR)") }
                 }
             }
         },
