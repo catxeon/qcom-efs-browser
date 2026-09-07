@@ -238,6 +238,8 @@ class FeatureDefsTest {
     fun `r17_2t2t empty inner array is disabled without throwing`() {
         val f = ALL_FEATURES.first { it.id == "r17_2t2t" }
         assertTrue(f.isDisabled(listOf(emptyList<Int>())))
+        assertTrue(f.isDisabled(listOf(List(24) { 0 })))
+        assertFalse(f.isDisabled(listOf(List(23) { 0 } + listOf(1))))
     }
 
     @Test

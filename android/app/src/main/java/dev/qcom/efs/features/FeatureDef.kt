@@ -12,6 +12,9 @@ data class NvWrite(val path: String, val bytes: List<Int>)
  * item files. [reads] lists the item files whose contents determine whether
  * the feature is already disabled; [isDisabled] receives one byte array per
  * EXISTING read path (all present) and must answer for exactly those.
+ * Degenerate inputs follow mtbtool: a single-read feature treats an empty
+ * array list as disabled (true), while a multi-read feature requires all N
+ * arrays and reports not-disabled otherwise.
  *
  * 1:1 port of mtbtool's FeatureDef table (dev.henrik.mtbtool.FeatureDef).
  */
@@ -31,6 +34,7 @@ const val SUBSCRIPTION_SUFFIX = "_Subscription01"
  * [SUBSCRIPTION_SUFFIX] to the filename, idempotently.
  */
 fun slotPath(path: String, slot: Int): String {
+    require(slot == 0 || slot == 1)
     if (slot == 0) return path
     if (path.endsWith(SUBSCRIPTION_SUFFIX)) return path
     return path + SUBSCRIPTION_SUFFIX
@@ -41,6 +45,8 @@ private val NR_BASE = "/nv/item_files/modem/nr5g/RRC/"
 /**
  * The 12 NR5G capability toggles from mtbtool's features screen. Bytes and
  * disabled-detection are byte-for-byte faithful to the mtbtool source.
+ * Do not "clean up" these payloads; each isDisabled must recognize exactly
+ * what its writes produce.
  */
 val ALL_FEATURES: List<FeatureDef> = listOf(
     FeatureDef(
