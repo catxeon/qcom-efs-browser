@@ -9,6 +9,11 @@ import dev.qcom.efs.bulk.BulkCommand
 import dev.qcom.efs.bulk.BulkOp
 import dev.qcom.efs.bulk.NvImportParseException
 import dev.qcom.efs.bulk.NvImportParser
+import dev.qcom.efs.features.EfsFeatureAccess
+import dev.qcom.efs.features.FeatureChecker
+import dev.qcom.efs.features.FeatureDef
+import dev.qcom.efs.features.FeatureStatus
+import dev.qcom.efs.features.ALL_FEATURES
 import dev.qcom.efs.update.Release
 import dev.qcom.efs.update.UpdateChecker
 import kotlin.coroutines.cancellation.CancellationException
@@ -93,6 +98,17 @@ sealed interface BulkState {
     ) : BulkState
 }
 
+/** State of the Disable-features dialog. */
+sealed interface FeaturesState {
+    data class Checking(val simSlot: Int) : FeaturesState
+    data class Ready(
+        val simSlot: Int,
+        val statuses: Map<String, FeatureStatus>,
+        val originals: Map<String, List<List<Int>?>>,
+        val note: String? = null,
+    ) : FeaturesState
+}
+
 data class UiState(
     val phase: Phase = Phase.DISCONNECTED,
     val error: String? = null,
@@ -114,6 +130,7 @@ data class UiState(
     val nvError: String? = null,
     /** Non-null while the bulk-import dialog is open. */
     val bulk: BulkState? = null,
+    val features: FeaturesState? = null,
     /** Non-null while the "new version available" dialog is open. */
     val update: Release? = null,
     /** Set once the session is closed and the activity should finish. */
@@ -387,6 +404,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var bulkRun: Job? = null
 
+    private val featureChecker by lazy { FeatureChecker(EfsFeatureAccess(repo)) }
+    private var featuresJob: Job? = null
+
     fun startBulkImport(uri: Uri) = viewModelScope.launch {
         val name = repo.displayName(uri)
         var readError: String? = null
@@ -517,11 +537,179 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         // The dialog covers the snackbar, so the SSR button's feedback goes
         // into the dialog itself.
+        routeDialogNote(msg)
+    }
+
+    private fun routeDialogNote(message: String) {
         _state.update { s ->
-            when (val bulk = s.bulk) {
-                is BulkState.Done -> s.copy(bulk = bulk.copy(note = msg))
-                else -> s.copy(toast = msg)
+            when {
+                s.bulk is BulkState.Preview -> s.copy(bulk = (s.bulk as BulkState.Preview).copy(note = message))
+                s.bulk is BulkState.Done -> s.copy(bulk = (s.bulk as BulkState.Done).copy(note = message))
+                s.features is FeaturesState.Ready -> s.copy(features = (s.features as FeaturesState.Ready).copy(note = message))
+                else -> s.copy(toast = message)
             }
+        }
+    }
+
+    // ---- feature toggles ----
+
+    fun openFeatures() {
+        if (featuresJob?.isActive == true) return
+        featuresJob = viewModelScope.launch {
+            _state.update { it.copy(features = FeaturesState.Checking(0)) }
+            checkFeatures(0)
+        }
+    }
+
+    fun closeFeatures() {
+        _state.update { it.copy(features = null) }
+    }
+
+    fun setFeatureSimSlot(slot: Int) {
+        if (featuresJob?.isActive == true) return
+        featuresJob = viewModelScope.launch {
+            _state.update { s ->
+                val f = s.features as? FeaturesState.Ready ?: return@update s
+                s.copy(features = FeaturesState.Checking(slot))
+            }
+            checkFeatures(slot)
+        }
+    }
+
+    private suspend fun checkFeatures(slot: Int) {
+        try {
+            val result = withContext(Dispatchers.IO) { featureChecker.check(ALL_FEATURES, slot) }
+            _state.update { s ->
+                if (s.features == null) s else s.copy(features = FeaturesState.Ready(slot, result.statuses, result.originals))
+            }
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            _state.update { it.copy(features = null, toast = describe(t)) }
+        }
+    }
+
+    fun disableFeature(id: String, spc: String) {
+        if (featuresJob?.isActive == true) return
+        featuresJob = viewModelScope.launch {
+            val ready = _state.value.features as? FeaturesState.Ready ?: return@launch
+            val feature = ALL_FEATURES.first { it.id == id }
+            if (!ready.statuses[id].let { it is FeatureStatus.CanDisable }) return@launch
+            // SPC pre-flight before any modification.
+            val unlocked = try {
+                withContext(Dispatchers.IO) { repo.spcUnlock(spc) }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                noteFeatures("SPC pre-flight failed: ${describe(t)}")
+                return@launch
+            }
+            if (!unlocked) {
+                noteFeatures("The modem rejected the SPC - feature not changed.")
+                return@launch
+            }
+            val slot = ready.simSlot
+            // Capture originals right before modifying.
+            val capture = try {
+                withContext(Dispatchers.IO) { featureChecker.check(listOf(feature), slot) }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                noteFeatures(describe(t))
+                return@launch
+            }
+            val capStatus = capture.statuses[feature.id]
+            if (capStatus is FeatureStatus.ReadError) {
+                updateStatus(feature.id, capStatus)
+                noteFeatures("Could not read the current value - not modifying.")
+                return@launch
+            }
+            updateStatus(feature.id, FeatureStatus.Writing)
+            val error = try {
+                withContext(Dispatchers.IO) { featureChecker.disable(feature, slot) }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                updateStatus(feature.id, FeatureStatus.WriteError(describe(t)))
+                return@launch
+            }
+            if (error != null) {
+                updateStatus(feature.id, FeatureStatus.WriteError(error))
+                noteFeatures(error)
+                return@launch
+            }
+            _state.update { s ->
+                val f = s.features as? FeaturesState.Ready ?: return@update s
+                s.copy(
+                    features = f.copy(
+                        statuses = f.statuses + (feature.id to FeatureStatus.AlreadyDisabled),
+                        originals = f.originals + (feature.id to capture.originals[feature.id]!!),
+                    ),
+                )
+            }
+        }
+    }
+
+    fun restoreFeature(id: String, spc: String) {
+        if (featuresJob?.isActive == true) return
+        featuresJob = viewModelScope.launch {
+            val ready = _state.value.features as? FeaturesState.Ready ?: return@launch
+            val feature = ALL_FEATURES.first { it.id == id }
+            val originals = ready.originals[id] ?: return@launch
+            if (!ready.statuses[id].let { it is FeatureStatus.AlreadyDisabled || it is FeatureStatus.WriteError }) return@launch
+            val unlocked = try {
+                withContext(Dispatchers.IO) { repo.spcUnlock(spc) }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                noteFeatures("SPC pre-flight failed: ${describe(t)}")
+                return@launch
+            }
+            if (!unlocked) {
+                noteFeatures("The modem rejected the SPC - nothing restored.")
+                return@launch
+            }
+            updateStatus(feature.id, FeatureStatus.Restoring)
+            val error = try {
+                withContext(Dispatchers.IO) { featureChecker.restore(feature, originals, ready.simSlot) }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                updateStatus(feature.id, FeatureStatus.WriteError(describe(t)))
+                return@launch
+            }
+            if (error != null) {
+                updateStatus(feature.id, FeatureStatus.WriteError(error))
+                noteFeatures(error)
+                return@launch
+            }
+            // Re-check this one feature to show the restored state truthfully.
+            val recheck = try {
+                withContext(Dispatchers.IO) { featureChecker.check(listOf(feature), ready.simSlot) }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                null
+            }
+            _state.update { s ->
+                val f = s.features as? FeaturesState.Ready ?: return@update s
+                val status = recheck?.statuses?.get(feature.id) ?: FeatureStatus.CanDisable
+                s.copy(
+                    features = f.copy(
+                        statuses = f.statuses + (feature.id to status),
+                        originals = f.originals - feature.id,
+                        note = "Original values restored.",
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun updateStatus(id: String, status: FeatureStatus) {
+        _state.update { s ->
+            val f = s.features as? FeaturesState.Ready ?: return@update s
+            s.copy(features = f.copy(statuses = f.statuses + (id to status)))
+        }
+    }
+
+    private fun noteFeatures(message: String) {
+        _state.update { s ->
+            val f = s.features as? FeaturesState.Ready
+                ?: return@update s.copy(toast = message)
+            s.copy(features = f.copy(note = message))
         }
     }
 
@@ -618,13 +806,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         // The dialog covers the snackbar, so the SPC test's feedback goes into
         // the dialog itself while it is open.
-        _state.update { s ->
-            when (val bulk = s.bulk) {
-                is BulkState.Preview -> s.copy(bulk = bulk.copy(note = msg))
-                is BulkState.Done -> s.copy(bulk = bulk.copy(note = msg))
-                else -> s.copy(toast = msg)
-            }
-        }
+        routeDialogNote(msg)
     }
 
     fun rawSend(hex: String, onResult: (String) -> Unit) = work("sending a raw DIAG packet") {
