@@ -65,7 +65,7 @@ val ALL_FEATURES: List<FeatureDef> = listOf(
             NR_BASE + "cap_swul_5x_control",
         ),
         writes = listOf(
-            NvWrite(NR_BASE + "cap_control_nrca_xf_plus_yt_swul_band_combos_v2", List(18) { 0 }),
+            NvWrite(NR_BASE + "cap_control_nrca_xf_plus_yt_swul_band_combos_v2", List(17) { 0 }),
             NvWrite(NR_BASE + "cap_swul_type_control", listOf(0, 0, 0)),
             NvWrite(NR_BASE + "cap_swul_control", listOf(0)),
             NvWrite(NR_BASE + "cap_swul_3x_control", listOf(0)),

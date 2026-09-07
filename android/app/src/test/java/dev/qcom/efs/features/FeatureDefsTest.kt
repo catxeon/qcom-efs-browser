@@ -53,7 +53,7 @@ class FeatureDefsTest {
         )
         assertEquals(
             listOf(
-                List(18) { 0 },
+                List(17) { 0 },
                 listOf(0, 0, 0),
                 listOf(0),
                 listOf(0),
