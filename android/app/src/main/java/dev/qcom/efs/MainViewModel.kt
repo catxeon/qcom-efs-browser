@@ -14,6 +14,7 @@ import dev.qcom.efs.features.FeatureChecker
 import dev.qcom.efs.features.FeatureDef
 import dev.qcom.efs.features.FeatureStatus
 import dev.qcom.efs.features.ALL_FEATURES
+import dev.qcom.efs.features.preservedOriginals
 import dev.qcom.efs.update.Release
 import dev.qcom.efs.update.UpdateChecker
 import kotlin.coroutines.cancellation.CancellationException
@@ -410,6 +411,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val featureChecker by lazy { FeatureChecker(EfsFeatureAccess(repo)) }
     private var featuresJob: Job? = null
 
+    /** Disable-time originals per (feature id, slot) provenance; main-thread only. */
+    private val savedOriginals = mutableMapOf<Pair<String, Int>, List<List<Int>?>>()
+
     // Bulk import and the feature toggles both write NV items, so the guards
     // on their entry points keep them mutually exclusive: only one
     // NV-writing actor may run at a time.
@@ -602,7 +606,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         try {
             val result = withContext(Dispatchers.IO) { featureChecker.check(ALL_FEATURES, slot) }
             _state.update { s ->
-                if (s.features == null) s else s.copy(features = FeaturesState.Ready(slot, result.statuses, result.originals))
+                if (s.features == null) s
+                else s.copy(
+                    features = FeaturesState.Ready(
+                        slot,
+                        result.statuses,
+                        preservedOriginals(
+                            result,
+                            savedOriginals.filterKeys { it.second == slot }.mapKeys { it.key.first },
+                        ),
+                    ),
+                )
             }
         } catch (t: Throwable) {
             if (t is CancellationException) throw t
@@ -647,6 +661,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             val captured = capture.originals[feature.id] ?: return@launch
+            savedOriginals[feature.id to slot] = captured
             _state.update { s ->
                 val f = s.features as? FeaturesState.Ready ?: return@update s
                 s.copy(
@@ -702,6 +717,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     ),
                 )
             }
+            savedOriginals.remove(feature.id to ready.simSlot)
         }
     }
 

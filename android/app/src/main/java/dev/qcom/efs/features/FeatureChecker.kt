@@ -140,3 +140,23 @@ class FeatureChecker(private val access: FeatureItemAccess) {
         return null
     }
 }
+
+/**
+ * Merges [previous] disable-time provenance into a freshly re-checked [fresh]
+ * FeatureCheck.  WHY: a re-check of an already-disabled feature reads the
+ * disabled payload as "current bytes", but those bytes are what WE wrote, not
+ * the pre-disable original - restoring them would write disabled bytes over
+ * disabled bytes and the feature could never come back.  For features that
+ * are AlreadyDisabled and have a saved entry from when they were actually
+ * disabled, that saved entry is the true original and must win; everything
+ * else keeps the fresh capture.  Provenance lives only in the app process
+ * (lost on process death, like mtbtool) - a fresh capture is the best we can
+ * do without it.
+ */
+fun preservedOriginals(
+    fresh: FeatureCheck,
+    previous: Map<String, List<List<Int>?>>,
+): Map<String, List<List<Int>?>> = fresh.originals.mapValues { (id, captured) ->
+    val disabled = fresh.statuses[id] is FeatureStatus.AlreadyDisabled
+    if (disabled && previous.containsKey(id)) previous.getValue(id) else captured
+}

@@ -159,4 +159,51 @@ class FeatureCheckerTest {
         val c = FeatureChecker(access)
         assertEquals("Restore failed for cap_control_fdd_ul_mimo", c.restore(fdd, listOf(listOf(1, 1)), slot = 0))
     }
+
+    @Test
+    fun `preserved originals use the previous entry for already disabled features`() = runBlocking {
+        // The item holds the disabled payload now, so the fresh capture is not
+        // an original; the disable-time provenance (item absent) must win.
+        val c = FeatureChecker(FakeAccess(path to listOf(0, 0)))
+        val fresh = c.check(listOf(fdd), slot = 0)
+        assertEquals(FeatureStatus.AlreadyDisabled, fresh.statuses[fdd.id])
+        val result = preservedOriginals(fresh, mapOf(fdd.id to listOf<List<Int>?>(null)))
+        assertEquals(listOf<List<Int>?>(null), result[fdd.id])
+    }
+
+    @Test
+    fun `preserved originals keep the fresh capture when the feature can be disabled`() = runBlocking {
+        // Provenance is stale here (the item was deleted externally after the
+        // disable), so the fresh capture wins.
+        val c = FeatureChecker(FakeAccess())
+        val fresh = c.check(listOf(fdd), slot = 0)
+        assertEquals(FeatureStatus.CanDisable, fresh.statuses[fdd.id])
+        val result = preservedOriginals(fresh, mapOf(fdd.id to listOf<List<Int>?>(listOf(1, 1))))
+        assertEquals(listOf<List<Int>?>(null), result[fdd.id])
+    }
+
+    @Test
+    fun `preserved originals keep the fresh capture without previous provenance`() = runBlocking {
+        val c = FeatureChecker(FakeAccess(path to listOf(0, 0)))
+        val fresh = c.check(listOf(fdd), slot = 0)
+        assertEquals(FeatureStatus.AlreadyDisabled, fresh.statuses[fdd.id])
+        val result = preservedOriginals(fresh, emptyMap())
+        assertEquals(fresh.originals[fdd.id], result[fdd.id])
+    }
+
+    @Test
+    fun `preserved originals merge per feature and drop unrelated ids`() = runBlocking {
+        val c = FeatureChecker(FakeAccess(path to listOf(0, 0), dlPath to listOf(0)))
+        val fresh = c.check(listOf(fdd, dl), slot = 0)
+        assertEquals(FeatureStatus.AlreadyDisabled, fresh.statuses[fdd.id])
+        assertEquals(FeatureStatus.CanDisable, fresh.statuses[dl.id])
+        val previous = mapOf(
+            fdd.id to listOf<List<Int>?>(null),
+            "not_a_feature" to listOf<List<Int>?>(listOf(7)),
+        )
+        val result = preservedOriginals(fresh, previous)
+        assertEquals(listOf<List<Int>?>(null), result[fdd.id])
+        assertEquals(listOf<List<Int>?>(listOf(0)), result[dl.id])
+        assertEquals(setOf(fdd.id, dl.id), result.keys)
+    }
 }
