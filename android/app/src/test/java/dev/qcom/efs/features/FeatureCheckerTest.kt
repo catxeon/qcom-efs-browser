@@ -41,6 +41,7 @@ class FeatureCheckerTest {
     private val dl = ALL_FEATURES.first { it.id == "dl_nrca" }
     private val path = "/nv/item_files/modem/nr5g/RRC/cap_control_fdd_ul_mimo"
     private val dlPath = "/nv/item_files/modem/nr5g/RRC/cap_nrca_downgrade_1cc"
+    private val nrBase = "/nv/item_files/modem/nr5g/RRC/"
 
     @Test
     fun `absent item means feature can be disabled`() = runBlocking {
@@ -90,9 +91,10 @@ class FeatureCheckerTest {
 
     @Test
     fun `capture returns per-path values with null for absent`() = runBlocking {
-        val c = FeatureChecker(FakeAccess(path to listOf(1, 1)))
-        val originals = c.check(listOf(fdd), slot = 0).originals[fdd.id]!!
-        assertEquals(listOf<List<Int>?>(listOf(1, 1)), originals)
+        val nsa = ALL_FEATURES.first { it.id == "nsa_tf_nrca" }
+        val c = FeatureChecker(FakeAccess(nrBase + "cap_control_mrdc_f_plus_t_band_combos" to listOf(0)))
+        val originals = c.check(listOf(nsa), slot = 0).originals[nsa.id]!!
+        assertEquals(listOf<List<Int>?>(listOf(0), null), originals)
     }
 
     @Test
@@ -108,6 +110,16 @@ class FeatureCheckerTest {
         val access = FakeAccess().apply { failWriteOn = path }
         val c = FeatureChecker(access)
         assertEquals("Write failed for cap_control_fdd_ul_mimo", c.disable(fdd, slot = 0))
+    }
+
+    @Test
+    fun `disable of a multi-write feature stops at the first failure`() = runBlocking {
+        val r16 = ALL_FEATURES.first { it.id == "r16_2t1t" }
+        val access = FakeAccess().apply { failWriteOn = nrBase + "cap_swul_type_control" }
+        val c = FeatureChecker(access)
+        assertEquals("Write failed for cap_swul_type_control", c.disable(r16, slot = 0))
+        assertEquals(1, access.writes.size)
+        assertEquals(nrBase + "cap_control_nrca_xf_plus_yt_swul_band_combos_v2", access.writes.single().first)
     }
 
     @Test

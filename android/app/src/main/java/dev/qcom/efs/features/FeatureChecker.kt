@@ -14,7 +14,12 @@ sealed interface FeatureStatus {
     data class ReadError(val message: String) : FeatureStatus
 }
 
-/** Result of checking all features: status + captured originals per feature id. */
+/**
+ * Result of checking all features: status + captured originals per feature id.
+ * Features with a [FeatureStatus.ReadError] status get an all-null originals
+ * entry (`List(reads.size) { null }`); callers must not attempt to restore
+ * from those entries.
+ */
 data class FeatureCheck(
     val statuses: Map<String, FeatureStatus>,
     val originals: Map<String, List<List<Int>?>>,
