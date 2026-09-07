@@ -191,23 +191,28 @@ private fun ResultList(results: List<BulkResult>) {
     }
     LazyColumn(Modifier.heightIn(max = 240.dp)) {
         items(results) { r ->
-            val label = buildString {
+            val prefix = buildString {
                 append(if (r.op == BulkOp.WRITE) "W" else "D")
                 append(" ")
                 append(r.simTag)
-                append(" ")
-                append(r.path.substringAfterLast('/'))
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    label,
+                    prefix,
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     maxLines = 1,
+                )
+                Text(
+                    r.path.substringAfterLast('/'),
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                    modifier = Modifier.weight(1f),
                 )
                 Text(
                     if (r.ok) "OK" else "FAIL",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (r.ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    maxLines = 1,
+                    softWrap = false,
                 )
             }
             r.error?.let {
