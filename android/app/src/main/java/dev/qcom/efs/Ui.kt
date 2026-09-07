@@ -38,6 +38,7 @@ import java.util.Date
 import java.util.Locale
 
 import dev.qcom.efs.bulk.ui.BulkImportDialog
+import dev.qcom.efs.features.ui.FeaturesDialog
 import dev.qcom.efs.update.Release
 
 private val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
@@ -161,6 +162,11 @@ fun App(vm: MainViewModel) {
                                 },
                             )
                             DropdownMenuItem(
+                                text = { Text("Disable features") },
+                                leadingIcon = { Icon(Icons.Filled.Tune, null) },
+                                onClick = { menu = false; vm.openFeatures() },
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Raw DIAG packet") },
                                 leadingIcon = { Icon(Icons.Filled.Code, null) },
                                 onClick = { menu = false; showRaw = true },
@@ -282,6 +288,20 @@ fun App(vm: MainViewModel) {
             onStart = { spc -> vm.runBulkImport(spc) },
             onSsr = { vm.modemSsr() },
             onDismiss = { vm.closeBulkImport() },
+        )
+    }
+
+    state.features?.let { features ->
+        FeaturesDialog(
+            state = features,
+            readOnly = state.readOnly,
+            onSimSlot = { slot -> vm.setFeatureSimSlot(slot) },
+            onSpcUnlock = { spc -> vm.spcUnlock(spc) },
+            onEnableWrites = { vm.toggleReadOnly() },
+            onDisable = { id, spc -> vm.disableFeature(id, spc) },
+            onRestore = { id, spc -> vm.restoreFeature(id, spc) },
+            onSsr = { vm.modemSsr() },
+            onDismiss = { vm.closeFeatures() },
         )
     }
 
