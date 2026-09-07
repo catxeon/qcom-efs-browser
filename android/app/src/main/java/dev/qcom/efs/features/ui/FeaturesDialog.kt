@@ -2,6 +2,7 @@ package dev.qcom.efs.features.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -10,7 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -26,21 +27,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import dev.qcom.efs.FeaturesState
 import dev.qcom.efs.features.FeatureStatus
 import dev.qcom.efs.features.ALL_FEATURES
-
-private fun statusLabel(status: FeatureStatus?): String = when (status) {
-    is FeatureStatus.AlreadyDisabled -> "disabled"
-    is FeatureStatus.CanDisable -> "active"
-    is FeatureStatus.Writing -> "writing…"
-    is FeatureStatus.Restoring -> "restoring…"
-    is FeatureStatus.WriteError -> "failed"
-    is FeatureStatus.ReadError -> "read error"
-    null -> "?"
-}
 
 @Composable
 private fun StatusChip(status: FeatureStatus?) {
@@ -70,6 +60,13 @@ fun FeaturesDialog(
     onSsr: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var spc by remember { mutableStateOf("000000") }
+    var ssrBusy by remember { mutableStateOf(false) }
+    val note = (state as? FeaturesState.Ready)?.note
+    LaunchedEffect(note) {
+        if (note != null) ssrBusy = false
+    }
+
     when (state) {
         is FeaturesState.Checking -> AlertDialog(
             onDismissRequest = onDismiss,
@@ -79,7 +76,7 @@ fun FeaturesDialog(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    androidx.compose.material3.CircularProgressIndicator(
+                    CircularProgressIndicator(
                         modifier = Modifier.padding(4.dp),
                         strokeWidth = 3.dp,
                     )
@@ -93,6 +90,10 @@ fun FeaturesDialog(
 
         is FeaturesState.Ready -> ReadyBody(
             state = state,
+            spc = spc,
+            ssrBusy = ssrBusy,
+            onSpcChange = { spc = it },
+            onSsrBusyChange = { ssrBusy = it },
             readOnly = readOnly,
             onSimSlot = onSimSlot,
             onSpcUnlock = onSpcUnlock,
@@ -108,6 +109,10 @@ fun FeaturesDialog(
 @Composable
 private fun ReadyBody(
     state: FeaturesState.Ready,
+    spc: String,
+    ssrBusy: Boolean,
+    onSpcChange: (String) -> Unit,
+    onSsrBusyChange: (Boolean) -> Unit,
     readOnly: Boolean,
     onSimSlot: (Int) -> Unit,
     onSpcUnlock: (String) -> Unit,
@@ -117,14 +122,8 @@ private fun ReadyBody(
     onSsr: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var spc by remember { mutableStateOf("000000") }
-    var ssrBusy by remember { mutableStateOf(false) }
     val acting = state.statuses.values.any {
         it is FeatureStatus.Writing || it is FeatureStatus.Restoring
-    }
-
-    LaunchedEffect(state.note) {
-        if (state.note != null) ssrBusy = false
     }
 
     AlertDialog(
@@ -136,7 +135,8 @@ private fun ReadyBody(
                     listOf(0 to "SIM 0", 1 to "SIM 1").forEach { (slot, label) ->
                         FilterChip(
                             selected = state.simSlot == slot,
-                            onClick = { if (!acting) onSimSlot(slot) },
+                            enabled = !acting,
+                            onClick = { onSimSlot(slot) },
                             label = { Text(label) },
                         )
                     }
@@ -183,17 +183,17 @@ private fun ReadyBody(
                             }
                             StatusChip(status)
                             val canDisable = status is FeatureStatus.CanDisable && !readOnly && !acting && spc.length == 6
-                            val canRestore = status is FeatureStatus.AlreadyDisabled &&
+                            val canRestore = (status is FeatureStatus.AlreadyDisabled || status is FeatureStatus.WriteError) &&
                                 state.originals[feature.id] != null && !readOnly && !acting && spc.length == 6
                             when {
                                 status is FeatureStatus.Writing || status is FeatureStatus.Restoring -> {}
                                 canDisable -> OutlinedButton(
                                     onClick = { onDisable(feature.id, spc) },
-                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp),
                                 ) { Text("Off") }
                                 canRestore -> OutlinedButton(
                                     onClick = { onRestore(feature.id, spc) },
-                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp),
                                 ) { Text("Restore") }
                                 else -> {}
                             }
@@ -207,7 +207,7 @@ private fun ReadyBody(
                 ) {
                     OutlinedTextField(
                         value = spc,
-                        onValueChange = { spc = it.filter(Char::isDigit).take(6) },
+                        onValueChange = { onSpcChange(it.filter(Char::isDigit).take(6)) },
                         label = { Text("SPC") },
                         singleLine = true,
                         modifier = Modifier.weight(1f),
@@ -232,7 +232,7 @@ private fun ReadyBody(
                     )
                     Button(
                         onClick = {
-                            ssrBusy = true
+                            onSsrBusyChange(true)
                             onSsr()
                         },
                         enabled = !ssrBusy && !acting && !readOnly,
