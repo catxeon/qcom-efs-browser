@@ -14,7 +14,6 @@ import dev.qcom.efs.features.FeatureChecker
 import dev.qcom.efs.features.FeatureDef
 import dev.qcom.efs.features.FeatureStatus
 import dev.qcom.efs.features.ALL_FEATURES
-import dev.qcom.efs.features.preservedOriginals
 import dev.qcom.efs.update.Release
 import dev.qcom.efs.update.UpdateChecker
 import kotlin.coroutines.cancellation.CancellationException
@@ -66,6 +65,9 @@ private const val KEY_SKIPPED_VERSION = "skipped_version"
 /** SIM slot the Disable-features dialog opens on. */
 private const val DEFAULT_FEATURE_SLOT = 0
 
+/** Preference key recording that the feature-disable warning is off for good. */
+private const val KEY_DISABLE_WARNING_SUPPRESSED = "disable_warning_suppressed"
+
 /** One executed bulk command, shown in the dialog's result list. */
 data class BulkResult(
     val op: BulkOp,
@@ -108,7 +110,8 @@ sealed interface FeaturesState {
     data class Ready(
         val simSlot: Int,
         val statuses: Map<String, FeatureStatus>,
-        val originals: Map<String, List<List<Int>?>>,
+        /** True until the user ticks "Don't warn me again" (one-way, persisted). */
+        val warnBeforeDisable: Boolean,
         val note: String? = null,
     ) : FeaturesState
 }
@@ -411,9 +414,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val featureChecker by lazy { FeatureChecker(EfsFeatureAccess(repo)) }
     private var featuresJob: Job? = null
 
-    /** Disable-time originals per (feature id, slot) provenance; main-thread only. */
-    private val savedOriginals = mutableMapOf<Pair<String, Int>, List<List<Int>?>>()
-
     // Bulk import and the feature toggles both write NV items, so the guards
     // on their entry points keep them mutually exclusive: only one
     // NV-writing actor may run at a time.
@@ -579,9 +579,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun closeFeatures() {
         // Cancelling mid-check is safe: the check only reads, so stopping it
-        // between exchanges is harmless.  Never cancel during Writing or
-        // Restoring - a modification must run to completion so the modem is
-        // not left half-written.
+        // between exchanges is harmless.  Never cancel during Writing - a
+        // modification must run to completion so the modem is not left
+        // half-written.
         if (_state.value.features is FeaturesState.Checking) featuresJob?.cancel()
         _state.update { it.copy(features = null) }
     }
@@ -611,10 +611,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     features = FeaturesState.Ready(
                         slot,
                         result.statuses,
-                        preservedOriginals(
-                            result,
-                            savedOriginals.filterKeys { it.second == slot }.mapKeys { it.key.first },
-                        ),
+                        warnBeforeDisable = !disableWarningSuppressed(),
                     ),
                 )
             }
@@ -630,26 +627,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         featuresJob = viewModelScope.launch {
             val ready = _state.value.features as? FeaturesState.Ready ?: return@launch
             val feature = ALL_FEATURES.first { it.id == id }
-            if (ready.statuses[id] !is FeatureStatus.CanDisable) return@launch
+            // A failed write is retryable, so WriteError is accepted here too.
+            val status = ready.statuses[id]
+            if (status !is FeatureStatus.CanDisable && status !is FeatureStatus.WriteError) return@launch
             if (!ensureSpc(spc, "The modem rejected the SPC - feature not changed.", ::noteFeatures)) return@launch
-            val slot = ready.simSlot
-            // Capture originals right before modifying.
-            val capture = try {
-                withContext(Dispatchers.IO) { featureChecker.check(listOf(feature), slot) }
-            } catch (t: Throwable) {
-                if (t is CancellationException) throw t
-                noteFeatures(describe(t))
-                return@launch
-            }
-            val capStatus = capture.statuses[feature.id]
-            if (capStatus is FeatureStatus.ReadError) {
-                updateStatus(feature.id, capStatus)
-                noteFeatures("Could not read the current value - not modifying.")
-                return@launch
-            }
+            // The status from the last check is trusted: disable simply writes
+            // the disabling bytes again.
             updateStatus(feature.id, FeatureStatus.Writing)
             val error = try {
-                withContext(Dispatchers.IO) { featureChecker.disable(feature, slot) }
+                withContext(Dispatchers.IO) { featureChecker.disable(feature, ready.simSlot) }
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 updateStatus(feature.id, FeatureStatus.WriteError(describe(t)))
@@ -660,14 +646,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 noteFeatures(error)
                 return@launch
             }
-            val captured = capture.originals[feature.id] ?: return@launch
-            savedOriginals[feature.id to slot] = captured
             _state.update { s ->
                 val f = s.features as? FeaturesState.Ready ?: return@update s
                 s.copy(
                     features = f.copy(
                         statuses = f.statuses + (feature.id to FeatureStatus.AlreadyDisabled),
-                        originals = f.originals + (feature.id to captured),
                         // The new state supersedes any earlier error note.
                         note = null,
                     ),
@@ -676,50 +659,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun restoreFeature(id: String, spc: String) {
-        if (featuresJob?.isActive == true) return
-        if (bulkRun?.isActive == true) return
-        featuresJob = viewModelScope.launch {
-            val ready = _state.value.features as? FeaturesState.Ready ?: return@launch
-            val feature = ALL_FEATURES.first { it.id == id }
-            val originals = ready.originals[id] ?: return@launch
-            val status = ready.statuses[id]
-            if (status !is FeatureStatus.AlreadyDisabled && status !is FeatureStatus.WriteError) return@launch
-            if (!ensureSpc(spc, "The modem rejected the SPC - nothing restored.", ::noteFeatures)) return@launch
-            updateStatus(feature.id, FeatureStatus.Restoring)
-            val error = try {
-                withContext(Dispatchers.IO) { featureChecker.restore(feature, originals, ready.simSlot) }
-            } catch (t: Throwable) {
-                if (t is CancellationException) throw t
-                updateStatus(feature.id, FeatureStatus.WriteError(describe(t)))
-                return@launch
-            }
-            if (error != null) {
-                updateStatus(feature.id, FeatureStatus.WriteError(error))
-                noteFeatures(error)
-                return@launch
-            }
-            // Re-check this one feature to show the restored state truthfully.
-            val recheck = try {
-                withContext(Dispatchers.IO) { featureChecker.check(listOf(feature), ready.simSlot) }
-            } catch (t: Throwable) {
-                if (t is CancellationException) throw t
-                null
-            }
-            _state.update { s ->
-                val f = s.features as? FeaturesState.Ready ?: return@update s
-                val status = recheck?.statuses?.get(feature.id) ?: FeatureStatus.CanDisable
-                s.copy(
-                    features = f.copy(
-                        statuses = f.statuses + (feature.id to status),
-                        originals = f.originals - feature.id,
-                        note = "Original values restored.",
-                    ),
-                )
-            }
-            savedOriginals.remove(feature.id to ready.simSlot)
+    /** One-way: once suppressed, the warning never comes back (no reset UI). */
+    fun suppressDisableWarning() {
+        prefs.edit().putBoolean(KEY_DISABLE_WARNING_SUPPRESSED, true).apply()
+        _state.update { s ->
+            val f = s.features as? FeaturesState.Ready ?: return@update s
+            s.copy(features = f.copy(warnBeforeDisable = false))
         }
     }
+
+    private fun disableWarningSuppressed(): Boolean =
+        prefs.getBoolean(KEY_DISABLE_WARNING_SUPPRESSED, false)
 
     /**
      * SPC pre-flight before any modification.  Reports failure through

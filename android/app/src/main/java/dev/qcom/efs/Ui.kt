@@ -299,7 +299,7 @@ fun App(vm: MainViewModel) {
             onSpcUnlock = { spc -> vm.spcUnlock(spc) },
             onEnableWrites = { vm.toggleReadOnly() },
             onDisable = { id, spc -> vm.disableFeature(id, spc) },
-            onRestore = { id, spc -> vm.restoreFeature(id, spc) },
+            onSuppressDisableWarning = { vm.suppressDisableWarning() },
             onSsr = { vm.modemSsr() },
             onDismiss = { vm.closeFeatures() },
         )

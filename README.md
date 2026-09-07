@@ -36,7 +36,7 @@ modem's filesystem.
 | Arbitrary DIAG packet | the `raw` command (hex → hex) |
 | Tell you a new version is out | asks the GitHub releases API for the newest tag and offers it once, with a "skip this version" |
 | Bulk-import NV changes from a JSON file | the mtbtool v2 format (`sim0`/`sim1`/`dualsim` blocks; see the format doc in the mtbtool-android-app repo, `tools/bulk-import-format.md`) |
-| Disable NR5G capabilities (UL MIMO, UL/DL CA, DSS, …) | 12 quick toggles ported from mtbtool's features screen; per-SIM, with restore to captured originals |
+| Disable NR5G capabilities (UL MIMO, UL/DL CA, DSS, …) | 12 quick toggles ported from mtbtool's features screen; per-SIM, with a confirm dialog warning to back up EFS first (one-way toggle) |
 | Diagnostics | helper log, receive stats, the transport it found |
 
 **Read-only is on by default** — the helper refuses every command that would

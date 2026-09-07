@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -37,7 +38,7 @@ private fun StatusChip(status: FeatureStatus?) {
     val (text, color) = when (status) {
         is FeatureStatus.AlreadyDisabled -> "disabled" to MaterialTheme.colorScheme.primary
         is FeatureStatus.CanDisable -> "active" to MaterialTheme.colorScheme.onSurfaceVariant
-        is FeatureStatus.Writing, is FeatureStatus.Restoring -> "…" to MaterialTheme.colorScheme.tertiary
+        is FeatureStatus.Writing -> "…" to MaterialTheme.colorScheme.tertiary
         is FeatureStatus.WriteError, is FeatureStatus.ReadError -> "error" to MaterialTheme.colorScheme.error
         null -> "?" to MaterialTheme.colorScheme.onSurfaceVariant
     }
@@ -56,7 +57,7 @@ fun FeaturesDialog(
     onSpcUnlock: (String) -> Unit,
     onEnableWrites: () -> Unit,
     onDisable: (id: String, spc: String) -> Unit,
-    onRestore: (id: String, spc: String) -> Unit,
+    onSuppressDisableWarning: () -> Unit,
     onSsr: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -99,7 +100,7 @@ fun FeaturesDialog(
             onSpcUnlock = onSpcUnlock,
             onEnableWrites = onEnableWrites,
             onDisable = onDisable,
-            onRestore = onRestore,
+            onSuppressDisableWarning = onSuppressDisableWarning,
             onSsr = onSsr,
             onDismiss = onDismiss,
         )
@@ -118,13 +119,12 @@ private fun ReadyBody(
     onSpcUnlock: (String) -> Unit,
     onEnableWrites: () -> Unit,
     onDisable: (String, String) -> Unit,
-    onRestore: (String, String) -> Unit,
+    onSuppressDisableWarning: () -> Unit,
     onSsr: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val acting = state.statuses.values.any {
-        it is FeatureStatus.Writing || it is FeatureStatus.Restoring
-    }
+    val acting = state.statuses.values.any { it is FeatureStatus.Writing }
+    var pendingDisable by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     AlertDialog(
         onDismissRequest = { if (!acting) onDismiss() },
@@ -182,19 +182,21 @@ private fun ReadyBody(
                                 }
                             }
                             StatusChip(status)
-                            val canDisable = status is FeatureStatus.CanDisable && !readOnly && !acting && spc.length == 6
-                            val canRestore = (status is FeatureStatus.AlreadyDisabled || status is FeatureStatus.WriteError) &&
-                                state.originals[feature.id] != null && !readOnly && !acting && spc.length == 6
+                            val canDisable =
+                                (status is FeatureStatus.CanDisable || status is FeatureStatus.WriteError) &&
+                                    !readOnly && !acting && spc.length == 6
                             when {
-                                status is FeatureStatus.Writing || status is FeatureStatus.Restoring -> {}
+                                status is FeatureStatus.Writing -> {}
                                 canDisable -> OutlinedButton(
-                                    onClick = { onDisable(feature.id, spc) },
+                                    onClick = {
+                                        if (state.warnBeforeDisable) {
+                                            pendingDisable = feature.id to spc
+                                        } else {
+                                            onDisable(feature.id, spc)
+                                        }
+                                    },
                                     contentPadding = PaddingValues(horizontal = 12.dp),
                                 ) { Text("Off") }
-                                canRestore -> OutlinedButton(
-                                    onClick = { onRestore(feature.id, spc) },
-                                    contentPadding = PaddingValues(horizontal = 12.dp),
-                                ) { Text("Restore") }
                                 else -> {}
                             }
                         }
@@ -245,4 +247,35 @@ private fun ReadyBody(
             TextButton(onClick = onDismiss, enabled = !acting) { Text("Close") }
         },
     )
+
+    pendingDisable?.let { (id, spc) ->
+        AlertDialog(
+            onDismissRequest = { pendingDisable = null },
+            title = { Text("Disable this feature?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "This writes directly to the modem's EFS and can alter modem " +
+                                "behavior. Take an EFS backup first (overflow menu → backups).",
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = !state.warnBeforeDisable,
+                            onCheckedChange = { if (it) onSuppressDisableWarning() },
+                        )
+                        Text("Don't warn me again")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDisable = null
+                    onDisable(id, spc)
+                }) { Text("Turn off") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDisable = null }) { Text("Cancel") }
+            },
+        )
+    }
 }
