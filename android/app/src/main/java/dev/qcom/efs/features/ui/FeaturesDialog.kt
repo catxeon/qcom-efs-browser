@@ -2,7 +2,6 @@ package dev.qcom.efs.features.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -16,7 +15,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -152,30 +150,28 @@ private fun ReadyBody(
                                     )
                                 }
                             }
+                            val canDisable =
+                                (status is FeatureStatus.CanDisable || status is FeatureStatus.WriteError) &&
+                                    !readOnly && !acting
                             if (status is FeatureStatus.Writing) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.padding(4.dp),
                                     strokeWidth = 3.dp,
                                 )
                             } else {
-                                Switch(checked = status is FeatureStatus.AlreadyDisabled, onCheckedChange = null)
-                            }
-                            val canDisable =
-                                (status is FeatureStatus.CanDisable || status is FeatureStatus.WriteError) &&
-                                    !readOnly && !acting
-                            when {
-                                status is FeatureStatus.Writing -> {}
-                                canDisable -> OutlinedButton(
-                                    onClick = {
-                                        if (state.warnBeforeDisable) {
-                                            pendingDisable = feature.id to DEFAULT_SPC
-                                        } else {
-                                            onDisable(feature.id, DEFAULT_SPC)
+                                Switch(
+                                    checked = status is FeatureStatus.AlreadyDisabled,
+                                    onCheckedChange = { on ->
+                                        if (on) {
+                                            if (state.warnBeforeDisable) {
+                                                pendingDisable = feature.id to DEFAULT_SPC
+                                            } else {
+                                                onDisable(feature.id, DEFAULT_SPC)
+                                            }
                                         }
                                     },
-                                    contentPadding = PaddingValues(horizontal = 12.dp),
-                                ) { Text("Off") }
-                                else -> {}
+                                    enabled = canDisable,
+                                )
                             }
                         }
                     }
@@ -188,18 +184,15 @@ private fun ReadyBody(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                val anyDisabled = state.statuses.values.any { it is FeatureStatus.AlreadyDisabled }
-                if (anyDisabled) {
-                    Text(
-                        text = "Changes reach the modem after a restart. On Xiaomi devices you can trigger it below; otherwise toggle airplane mode or reboot.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    Button(
-                        onClick = { onSsr() },
-                        enabled = !busy && !acting && !readOnly,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Restart modem (SSR)") }
-                }
+                Text(
+                    text = "Changes reach the modem after a restart. On Xiaomi devices you can trigger it below; otherwise toggle airplane mode or reboot.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Button(
+                    onClick = { onSsr() },
+                    enabled = !busy && !acting && !readOnly,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Restart modem (SSR)") }
             }
         },
         confirmButton = {
