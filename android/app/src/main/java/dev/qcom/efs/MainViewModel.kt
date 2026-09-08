@@ -31,7 +31,7 @@ enum class Phase { DISCONNECTED, CONNECTING, READY, FAILED }
 
 data class Detail(val entry: EfsEntry, val path: String, val stat: EfsStat? = null)
 
-data class PreviewData(val path: String, val bytes: ByteArray, val asText: Boolean) {
+data class PreviewData(val bytes: ByteArray, val asText: Boolean) {
     override fun equals(other: Any?) = this === other
     override fun hashCode() = System.identityHashCode(this)
 }
@@ -131,6 +131,10 @@ data class UiState(
     val toast: String? = null,
     val detail: Detail? = null,
     val preview: PreviewData? = null,
+    /** True while the detail sheet's inline content is being read. */
+    val previewLoading: Boolean = false,
+    /** Inline-content read failure, shown inside the sheet rather than the snackbar. */
+    val previewError: String? = null,
     val editor: EditorData? = null,
     val pendingExport: PendingExport? = null,
     val nv: NvResult? = null,
@@ -142,6 +146,17 @@ data class UiState(
     val update: Release? = null,
     /** Set once the session is closed and the activity should finish. */
     val exitAfterDisconnect: Boolean = false,
+)
+
+/**
+ * Closes the detail sheet (or swaps in [detail]) and drops its inline content:
+ * the sheet and the content loaded for it always reset together.
+ */
+private fun UiState.withoutSheet(detail: Detail? = null) = copy(
+    detail = detail,
+    preview = null,
+    previewLoading = false,
+    previewError = null,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -274,7 +289,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun open(path: String) = work("reading $path") {
         val entries = repo.list(path)
-        _state.update { it.copy(path = path, entries = entries, detail = null, preview = null) }
+        _state.update { it.copy(path = path, entries = entries).withoutSheet() }
     }
 
     fun refresh() = open(_state.value.path)
@@ -291,7 +306,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         } else {
             work("reading metadata") {
                 val st = runCatching { repo.stat(full) }.getOrNull()
-                _state.update { it.copy(detail = Detail(entry, full, st)) }
+                _state.update { it.withoutSheet(Detail(entry, full, st)) }
             }
         }
     }
@@ -300,17 +315,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val full = Paths.child(_state.value.path, entry.name)
         work("reading metadata") {
             val st = runCatching { repo.stat(full) }.getOrNull()
-            _state.update { it.copy(detail = Detail(entry, full, st)) }
+            _state.update { it.withoutSheet(Detail(entry, full, st)) }
         }
     }
 
-    fun closeDetail() = _state.update { it.copy(detail = null) }
-    fun closePreview() = _state.update { it.copy(preview = null) }
+    fun closeDetail() = _state.update { it.withoutSheet() }
     fun closeEditor() = _state.update { it.copy(editor = null) }
 
     fun preview(path: String) = work("reading $path") {
-        val bytes = repo.readInline(path)
-        _state.update { it.copy(preview = PreviewData(path, bytes, looksLikeText(bytes))) }
+        _state.update { it.copy(preview = null, previewError = null, previewLoading = true) }
+        try {
+            val bytes = repo.readInline(path)
+            _state.update { s ->
+                // A sheet that closed or moved on mid-read must not show the
+                // stale bytes; the reply is dropped unless it still matches.
+                if (s.detail?.path != path) s
+                else s.copy(preview = PreviewData(bytes, looksLikeText(bytes)), previewLoading = false)
+            }
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            _state.update { s ->
+                if (s.detail?.path != path) s
+                else s.copy(previewError = describe(t), previewLoading = false)
+            }
+        }
     }
 
     // ---- editing -------------------------------------------------------
@@ -327,7 +355,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val mode = ((detail.stat?.mode ?: detail.entry.mode) and 0xFFF).let { if (it == 0) 420 else it }
         _state.update {
             it.copy(
-                detail = null,
                 editor = EditorData(
                     path = detail.path,
                     original = bytes,
@@ -337,7 +364,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     // about, so it opens in hex even when it reads as text.
                     startAsText = !detail.entry.isItem && looksLikeText(bytes),
                 ),
-            )
+            ).withoutSheet()
         }
     }
 
@@ -419,7 +446,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val kind = if (asItem == true) "item file" else "file"
         _state.update { it.copy(toast = "Wrote ${bytes.size} bytes as a $kind$warn") }
         val entries = repo.list(_state.value.path)
-        _state.update { it.copy(entries = entries) }
+        _state.update { s ->
+            // Replacing the file the sheet is showing leaves it stale, so the
+            // sheet closes, the way Edit and Delete close it.
+            if (s.detail?.path == targetPath) s.copy(entries = entries).withoutSheet()
+            else s.copy(entries = entries)
+        }
     }
 
     // ---- bulk import ----------------------------------------------------
@@ -792,7 +824,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         repo.delete(detail.entry, detail.path)
         val entries = repo.list(_state.value.path)
         _state.update {
-            it.copy(detail = null, entries = entries, toast = "Deleted ${detail.entry.name}")
+            it.copy(entries = entries, toast = "Deleted ${detail.entry.name}").withoutSheet()
         }
     }
 
