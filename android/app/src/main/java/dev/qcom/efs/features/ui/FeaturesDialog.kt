@@ -188,9 +188,11 @@ private fun ReadyBody(
                     text = "Changes reach the modem after a restart. On Xiaomi devices you can trigger it below; otherwise toggle airplane mode or reboot.",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                // Not gated on read-only: a restart writes nothing, and it is
+                // exactly what someone who just re-armed the lock still needs.
                 Button(
                     onClick = { onSsr() },
-                    enabled = !busy && !acting && !readOnly,
+                    enabled = !busy && !acting,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Restart modem (SSR)") }
             }

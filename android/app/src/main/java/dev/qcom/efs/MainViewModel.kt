@@ -631,8 +631,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val status = ready.statuses[id]
             if (status !is FeatureStatus.CanDisable && status !is FeatureStatus.WriteError) return@launch
             if (!ensureSpc(spc, "The modem rejected the SPC - feature not changed.", ::noteFeatures)) return@launch
-            // The status from the last check is trusted: disable simply writes
-            // the disabling bytes again.
+            // The last check only says what to write; what the write really
+            // left behind is read back below.
             updateStatus(feature.id, FeatureStatus.Writing)
             val error = try {
                 withContext(Dispatchers.IO) { featureChecker.disable(feature, ready.simSlot) }
@@ -646,16 +646,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 noteFeatures(error)
                 return@launch
             }
-            _state.update { s ->
-                val f = s.features as? FeaturesState.Ready ?: return@update s
-                s.copy(
-                    features = f.copy(
-                        statuses = f.statuses + (feature.id to FeatureStatus.AlreadyDisabled),
-                        // The new state supersedes any earlier error note.
-                        note = null,
-                    ),
-                )
-            }
+            // A successful write is not proof the feature is off: ul_mimo and
+            // lowband_4rx share cap_limit_rf_mimo with mutually exclusive
+            // payloads, so disabling one re-enables the other.  Re-read every
+            // feature instead of assuming.  The row keeps its Writing spinner
+            // until the fresh statuses land, which also keeps the dialog
+            // locked for the duration.
+            checkFeatures(ready.simSlot)
         }
     }
 

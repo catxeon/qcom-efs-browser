@@ -1,5 +1,6 @@
 package dev.qcom.efs.bulk.ui
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -192,11 +193,10 @@ private fun ResultList(results: List<BulkResult>) {
     }
     LazyColumn(Modifier.heightIn(max = 240.dp)) {
         items(results) { r ->
-            // Palette ported from mtbtool's import log (write/delete + SIM0/SIM1).
-            val opColor = if (r.op == BulkOp.WRITE) Color(0xFF4FC3F7) else Color(0xFFFF8A65)
+            val opColor = if (r.op == BulkOp.WRITE) logBlue() else logOrange()
             val simColor = when (r.simTag) {
-                "SIM0" -> Color(0xFFCE93D8)
-                "SIM1" -> Color(0xFF80CBC4)
+                "SIM0" -> logPurple()
+                "SIM1" -> logTeal()
                 else -> MaterialTheme.colorScheme.onSurfaceVariant
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -236,3 +236,15 @@ private fun ResultList(results: List<BulkResult>) {
         }
     }
 }
+
+// Palette ported from mtbtool's import log (write/delete + SIM0/SIM1).  Those
+// hues are Material 300 shades, readable on a dark surface and washed out on a
+// white one, so each pairs with an 800 shade for the light theme.
+@Composable private fun logBlue() = themed(Color(0xFF4FC3F7), Color(0xFF0277BD))
+@Composable private fun logOrange() = themed(Color(0xFFFF8A65), Color(0xFFBF360C))
+@Composable private fun logPurple() = themed(Color(0xFFCE93D8), Color(0xFF6A1B9A))
+@Composable private fun logTeal() = themed(Color(0xFF80CBC4), Color(0xFF00695C))
+
+@Composable
+private fun themed(onDark: Color, onLight: Color): Color =
+    if (isSystemInDarkTheme()) onDark else onLight
