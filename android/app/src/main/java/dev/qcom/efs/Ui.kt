@@ -626,11 +626,18 @@ private fun DetailSheet(
                         "File is too large to display here. Use Save to export it.",
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    previewError != null -> Text(
-                        previewError,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
+                    previewError != null -> Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            previewError,
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        TextButton(onClick = onLoadContent) { Text("Retry") }
+                    }
                     preview != null -> InlinePreview(preview)
                 }
             }
