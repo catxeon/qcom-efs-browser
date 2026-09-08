@@ -9,6 +9,11 @@ import dev.qcom.efs.bulk.BulkCommand
 import dev.qcom.efs.bulk.BulkOp
 import dev.qcom.efs.bulk.NvImportParseException
 import dev.qcom.efs.bulk.NvImportParser
+import dev.qcom.efs.features.EfsFeatureAccess
+import dev.qcom.efs.features.FeatureChecker
+import dev.qcom.efs.features.FeatureDef
+import dev.qcom.efs.features.FeatureStatus
+import dev.qcom.efs.features.ALL_FEATURES
 import dev.qcom.efs.update.Release
 import dev.qcom.efs.update.UpdateChecker
 import kotlin.coroutines.cancellation.CancellationException
@@ -57,6 +62,12 @@ private const val MAX_EDIT = 64 * 1024
 /** Preference key holding the one release the user chose not to be reminded about. */
 private const val KEY_SKIPPED_VERSION = "skipped_version"
 
+/** SIM slot the Disable-features dialog opens on. */
+private const val DEFAULT_FEATURE_SLOT = 0
+
+/** Preference key recording that the feature-disable warning is off for good. */
+private const val KEY_DISABLE_WARNING_SUPPRESSED = "disable_warning_suppressed"
+
 /** One executed bulk command, shown in the dialog's result list. */
 data class BulkResult(
     val op: BulkOp,
@@ -93,6 +104,18 @@ sealed interface BulkState {
     ) : BulkState
 }
 
+/** State of the Disable-features dialog. */
+sealed interface FeaturesState {
+    data class Checking(val simSlot: Int) : FeaturesState
+    data class Ready(
+        val simSlot: Int,
+        val statuses: Map<String, FeatureStatus>,
+        /** True until the user ticks "Don't warn me again" (one-way, persisted). */
+        val warnBeforeDisable: Boolean,
+        val note: String? = null,
+    ) : FeaturesState
+}
+
 data class UiState(
     val phase: Phase = Phase.DISCONNECTED,
     val error: String? = null,
@@ -114,6 +137,7 @@ data class UiState(
     val nvError: String? = null,
     /** Non-null while the bulk-import dialog is open. */
     val bulk: BulkState? = null,
+    val features: FeaturesState? = null,
     /** Non-null while the "new version available" dialog is open. */
     val update: Release? = null,
     /** Set once the session is closed and the activity should finish. */
@@ -387,6 +411,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var bulkRun: Job? = null
 
+    private val featureChecker by lazy { FeatureChecker(EfsFeatureAccess(repo)) }
+    private var featuresJob: Job? = null
+
+    // Bulk import and the feature toggles both write NV items, so the guards
+    // on their entry points keep them mutually exclusive: only one
+    // NV-writing actor may run at a time.
+
     fun startBulkImport(uri: Uri) = viewModelScope.launch {
         val name = repo.displayName(uri)
         var readError: String? = null
@@ -429,6 +460,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun runBulkImport(spc: String) {
         if (bulkRun?.isActive == true) return
+        if (featuresJob?.isActive == true) return
         val preview = _state.value.bulk as? BulkState.Preview ?: return
         if (preview.commands.isEmpty()) return
         bulkRun = viewModelScope.launch {
@@ -517,11 +549,165 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         // The dialog covers the snackbar, so the SSR button's feedback goes
         // into the dialog itself.
+        routeDialogNote(msg)
+    }
+
+    private fun routeDialogNote(message: String) {
         _state.update { s ->
+            // When both dialogs are somehow open, the bulk dialog wins.
             when (val bulk = s.bulk) {
-                is BulkState.Done -> s.copy(bulk = bulk.copy(note = msg))
-                else -> s.copy(toast = msg)
+                is BulkState.Preview -> s.copy(bulk = bulk.copy(note = message))
+                is BulkState.Done -> s.copy(bulk = bulk.copy(note = message))
+                else -> when (val f = s.features) {
+                    is FeaturesState.Ready -> s.copy(features = f.copy(note = message))
+                    else -> s.copy(toast = message)
+                }
             }
+        }
+    }
+
+    // ---- feature toggles ----
+
+    fun openFeatures() {
+        if (featuresJob?.isActive == true) return
+        if (bulkRun?.isActive == true) return
+        featuresJob = viewModelScope.launch {
+            _state.update { it.copy(features = FeaturesState.Checking(DEFAULT_FEATURE_SLOT)) }
+            checkFeatures(DEFAULT_FEATURE_SLOT)
+        }
+    }
+
+    fun closeFeatures() {
+        // Cancelling mid-check is safe: the check only reads, so stopping it
+        // between exchanges is harmless.  Never cancel during Writing - a
+        // modification must run to completion so the modem is not left
+        // half-written.
+        if (_state.value.features is FeaturesState.Checking) featuresJob?.cancel()
+        _state.update { it.copy(features = null) }
+    }
+
+    fun setFeatureSimSlot(slot: Int) {
+        if (featuresJob?.isActive == true) return
+        if (bulkRun?.isActive == true) return
+        featuresJob = viewModelScope.launch {
+            var transitioned = false
+            _state.update { s ->
+                if (s.features !is FeaturesState.Ready) return@update s
+                transitioned = true
+                s.copy(features = FeaturesState.Checking(slot))
+            }
+            // Only re-check when the dialog actually transitioned; a closed
+            // dialog must not trigger I/O.
+            if (transitioned) checkFeatures(slot)
+        }
+    }
+
+    private suspend fun checkFeatures(slot: Int) {
+        try {
+            val result = withContext(Dispatchers.IO) { featureChecker.check(ALL_FEATURES, slot) }
+            _state.update { s ->
+                if (s.features == null) s
+                else s.copy(
+                    features = FeaturesState.Ready(
+                        slot,
+                        result.statuses,
+                        warnBeforeDisable = !disableWarningSuppressed(),
+                    ),
+                )
+            }
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            _state.update { it.copy(features = null, toast = describe(t)) }
+        }
+    }
+
+    fun disableFeature(id: String, spc: String) {
+        if (featuresJob?.isActive == true) return
+        if (bulkRun?.isActive == true) return
+        featuresJob = viewModelScope.launch {
+            val ready = _state.value.features as? FeaturesState.Ready ?: return@launch
+            val feature = ALL_FEATURES.first { it.id == id }
+            // A failed write is retryable, so WriteError is accepted here too.
+            val status = ready.statuses[id]
+            if (status !is FeatureStatus.CanDisable && status !is FeatureStatus.WriteError) return@launch
+            if (!ensureSpc(spc, "The modem rejected the SPC - feature not changed.", ::noteFeatures)) return@launch
+            // The status from the last check is trusted: disable simply writes
+            // the disabling bytes again.
+            updateStatus(feature.id, FeatureStatus.Writing)
+            val error = try {
+                withContext(Dispatchers.IO) { featureChecker.disable(feature, ready.simSlot) }
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                updateStatus(feature.id, FeatureStatus.WriteError(describe(t)))
+                return@launch
+            }
+            if (error != null) {
+                updateStatus(feature.id, FeatureStatus.WriteError(error))
+                noteFeatures(error)
+                return@launch
+            }
+            _state.update { s ->
+                val f = s.features as? FeaturesState.Ready ?: return@update s
+                s.copy(
+                    features = f.copy(
+                        statuses = f.statuses + (feature.id to FeatureStatus.AlreadyDisabled),
+                        // The new state supersedes any earlier error note.
+                        note = null,
+                    ),
+                )
+            }
+        }
+    }
+
+    /** One-way: once suppressed, the warning never comes back (no reset UI). */
+    fun suppressDisableWarning() {
+        prefs.edit().putBoolean(KEY_DISABLE_WARNING_SUPPRESSED, true).apply()
+        _state.update { s ->
+            val f = s.features as? FeaturesState.Ready ?: return@update s
+            s.copy(features = f.copy(warnBeforeDisable = false))
+        }
+    }
+
+    private fun disableWarningSuppressed(): Boolean =
+        prefs.getBoolean(KEY_DISABLE_WARNING_SUPPRESSED, false)
+
+    /**
+     * SPC pre-flight before any modification.  Reports failure through
+     * [onReject] - the unlock's exception, or [rejectionMessage] when the
+     * modem rejected the code (each caller keeps its own wording) - and
+     * returns false so the caller can bail out.
+     */
+    private suspend fun ensureSpc(
+        spc: String,
+        rejectionMessage: String,
+        onReject: (String) -> Unit,
+    ): Boolean {
+        val unlocked = try {
+            withContext(Dispatchers.IO) { repo.spcUnlock(spc) }
+        } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            onReject("SPC pre-flight failed: ${describe(t)}")
+            return false
+        }
+        if (!unlocked) {
+            onReject(rejectionMessage)
+            return false
+        }
+        return true
+    }
+
+    private fun updateStatus(id: String, status: FeatureStatus) {
+        _state.update { s ->
+            val f = s.features as? FeaturesState.Ready ?: return@update s
+            s.copy(features = f.copy(statuses = f.statuses + (id to status)))
+        }
+    }
+
+    private fun noteFeatures(message: String) {
+        _state.update { s ->
+            val f = s.features as? FeaturesState.Ready
+                ?: return@update s.copy(toast = message)
+            s.copy(features = f.copy(note = message))
         }
     }
 
@@ -618,13 +804,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         // The dialog covers the snackbar, so the SPC test's feedback goes into
         // the dialog itself while it is open.
-        _state.update { s ->
-            when (val bulk = s.bulk) {
-                is BulkState.Preview -> s.copy(bulk = bulk.copy(note = msg))
-                is BulkState.Done -> s.copy(bulk = bulk.copy(note = msg))
-                else -> s.copy(toast = msg)
-            }
-        }
+        routeDialogNote(msg)
     }
 
     fun rawSend(hex: String, onResult: (String) -> Unit) = work("sending a raw DIAG packet") {
