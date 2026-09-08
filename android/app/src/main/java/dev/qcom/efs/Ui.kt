@@ -43,6 +43,9 @@ import dev.qcom.efs.update.Release
 
 private val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
 
+/** The helper answers inline reads only up to this size; larger files are save-only. */
+private const val MAX_INLINE_READ = 512 * 1024
+
 private fun time(v: Int): String =
     if (v <= 0) "-" else stamp.format(Date(v.toLong() * 1000L))
 
@@ -238,9 +241,12 @@ fun App(vm: MainViewModel) {
     state.detail?.let { detail ->
         DetailSheet(
             detail = detail,
+            preview = state.preview,
+            previewLoading = state.previewLoading,
+            previewError = state.previewError,
             readOnly = state.readOnly,
             onDismiss = { vm.closeDetail() },
-            onPreview = { vm.preview(detail.path) },
+            onLoadContent = { vm.preview(detail.path) },
             onEdit = { vm.edit(detail) },
             onExport = { vm.requestExport(detail.path) },
             onReplace = {
@@ -253,7 +259,6 @@ fun App(vm: MainViewModel) {
         )
     }
 
-    state.preview?.let { PreviewDialog(it) { vm.closePreview() } }
     state.editor?.let { ed ->
         EditorDialog(ed, state.busy, onSave = { vm.saveEditor(it) }, onDismiss = { vm.closeEditor() })
     }
@@ -552,23 +557,49 @@ private fun BrowserScreen(state: UiState, vm: MainViewModel) {
 @Composable
 private fun DetailSheet(
     detail: Detail,
+    preview: PreviewData?,
+    previewLoading: Boolean,
+    previewError: String?,
     readOnly: Boolean,
     onDismiss: () -> Unit,
-    onPreview: () -> Unit,
+    onLoadContent: () -> Unit,
     onEdit: () -> Unit,
     onExport: () -> Unit,
     onReplace: () -> Unit,
     onChmod: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    val contentSize = detail.stat?.size ?: detail.entry.size
+    val tooLarge = contentSize > MAX_INLINE_READ
+
+    // The content is part of the sheet itself: opening the sheet is all it
+    // takes to read it.  Files the helper refuses to serve inline are not
+    // even tried.
+    LaunchedEffect(detail.path) {
+        if (!detail.entry.isDir && !tooLarge) onLoadContent()
+    }
+
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             Modifier
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text(detail.entry.name, style = MaterialTheme.typography.titleLarge)
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(detail.entry.name, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                if (!detail.entry.isDir) {
+                    TextButton(onClick = onExport) {
+                        Icon(Icons.Filled.Download, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Save")
+                    }
+                }
+            }
             SelectionContainer {
                 Text(detail.path, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace))
             }
@@ -576,7 +607,7 @@ private fun DetailSheet(
             val st = detail.stat
             KeyValue("Type", detail.entry.type)
             KeyValue("Mode", modeOctal(st?.mode ?: detail.entry.mode))
-            KeyValue("Size", humanSize((st?.size ?: detail.entry.size).toLong()))
+            KeyValue("Size", humanSize(contentSize.toLong()))
             KeyValue("Modified", time(st?.mtime ?: detail.entry.mtime))
             KeyValue("Created", time(st?.ctime ?: detail.entry.ctime))
             st?.target?.let { KeyValue("Points at", it) }
@@ -584,20 +615,23 @@ private fun DetailSheet(
             HorizontalDivider(Modifier.padding(vertical = 4.dp))
 
             if (!detail.entry.isDir) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    OutlinedButton(onClick = onPreview) {
-                        Icon(Icons.Filled.Visibility, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("View")
+                when {
+                    previewLoading -> Box(
+                        Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(Modifier.size(24.dp))
                     }
-                    OutlinedButton(onClick = onExport) {
-                        Icon(Icons.Filled.Download, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Save…")
-                    }
+                    tooLarge -> Text(
+                        "File is too large to display here. Use Save to export it.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    previewError != null -> Text(
+                        previewError,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    preview != null -> InlinePreview(preview)
                 }
             }
             if (!readOnly) {
@@ -643,36 +677,25 @@ private fun KeyValue(key: String, value: String) {
 }
 
 @Composable
-private fun PreviewDialog(data: PreviewData, onDismiss: () -> Unit) {
+private fun InlinePreview(data: PreviewData) {
     var asText by remember(data) { mutableStateOf(data.asText) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(data.path.substringAfterLast('/'), maxLines = 1) },
-        text = {
-            Column(Modifier.heightIn(max = 420.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    FilterChip(selected = asText, onClick = { asText = true }, label = { Text("Text") })
-                    Spacer(Modifier.width(8.dp))
-                    FilterChip(selected = !asText, onClick = { asText = false }, label = { Text("Hex") })
-                    Spacer(Modifier.weight(1f))
-                    Text(humanSize(data.bytes.size.toLong()), style = MaterialTheme.typography.labelSmall)
-                }
-                Spacer(Modifier.height(8.dp))
-                SelectionContainer {
-                    // Hex rows must not wrap, so that column gets its own
-                    // horizontal scroll; text is easier to read wrapped.
-                    val base = Modifier.verticalScroll(rememberScrollState())
-                    Text(
-                        if (asText) String(data.bytes, Charsets.ISO_8859_1) else hexDump(data.bytes),
-                        if (asText) base else base.horizontalScroll(rememberScrollState()),
-                        softWrap = asText,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    )
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-    )
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        FilterChip(selected = asText, onClick = { asText = true }, label = { Text("Text") })
+        Spacer(Modifier.width(8.dp))
+        FilterChip(selected = !asText, onClick = { asText = false }, label = { Text("Hex") })
+        Spacer(Modifier.weight(1f))
+        Text(humanSize(data.bytes.size.toLong()), style = MaterialTheme.typography.labelSmall)
+    }
+    SelectionContainer {
+        // Hex rows must not wrap, so they get their own horizontal scroll;
+        // text is easier to read wrapped.  Vertical scrolling is the sheet's.
+        Text(
+            if (asText) String(data.bytes, Charsets.ISO_8859_1) else hexDump(data.bytes),
+            if (asText) Modifier else Modifier.horizontalScroll(rememberScrollState()),
+            softWrap = asText,
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+        )
+    }
 }
 
 /**
