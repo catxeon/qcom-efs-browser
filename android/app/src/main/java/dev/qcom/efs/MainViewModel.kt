@@ -341,16 +341,30 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Commits the EFS journal after a write.  Until this runs the change only
+     * exists in the modem's journal, and a modem restart rolls it straight
+     * back — so a save that is not committed is not really saved.  Returns
+     * text to append to the toast when the commit did not go through, since
+     * the write itself did happen and saying nothing would be a lie.
+     */
+    private suspend fun commitWrite(): String =
+        runCatching { repo.sync() }.fold(
+            { "" },
+            { " (journal flush failed - it may not survive a modem restart)" },
+        )
+
     fun saveEditor(bytes: ByteArray) {
         val ed = _state.value.editor ?: return
         work("writing ${ed.path}") {
             repo.writeFile(ed.path, bytes, ed.mode, ed.isItem)
+            val warn = commitWrite()
             val entries = repo.list(_state.value.path)
             _state.update {
                 it.copy(
                     editor = null,
                     entries = entries,
-                    toast = "Wrote ${bytes.size} bytes to ${ed.path.substringAfterLast('/')}",
+                    toast = "Wrote ${bytes.size} bytes to ${ed.path.substringAfterLast('/')}$warn",
                 )
             }
         }
@@ -401,8 +415,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         work("writing $targetPath") {
         val bytes = repo.readUri(uri)
         repo.writeFile(targetPath, bytes, item = asItem)
+        val warn = commitWrite()
         val kind = if (asItem == true) "item file" else "file"
-        _state.update { it.copy(toast = "Wrote ${bytes.size} bytes as a $kind") }
+        _state.update { it.copy(toast = "Wrote ${bytes.size} bytes as a $kind$warn") }
         val entries = repo.list(_state.value.path)
         _state.update { it.copy(entries = entries) }
     }
@@ -541,14 +556,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun modemSsr() = work("restarting the modem") {
+        var reconnected = false
         val msg = try {
-            repo.modemSsr()
-            "SSR issued - waiting for the modem to come back"
+            reconnected = repo.modemSsr()
+            if (reconnected) "Modem restarted - EFS changes are committed and live"
+            else "Modem restarted, but the session did not come back - reconnect"
         } catch (t: Throwable) {
             describe(t)
         }
-        // The dialog covers the snackbar, so the SSR button's feedback goes
-        // into the dialog itself.
+        // The listing was read from the modem that just went away, so pull it
+        // again over the fresh session rather than leaving stale entries up.
+        // Inline rather than open(): that is its own work{} and would fight
+        // this one over the busy flag.
+        if (reconnected) runCatching {
+            val entries = repo.list(_state.value.path)
+            _state.update { it.copy(entries = entries) }
+        }
+        // A dialog would cover the toast, so the SSR button's feedback goes
+        // into the dialog itself when one is open.
         routeDialogNote(msg)
     }
 

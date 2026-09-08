@@ -12,12 +12,14 @@ optionally preceded, as on SM8850 and newer, by a datagram header
 
     [u16 type = 8][u16 length of the rest]
 
-The command line is <socket> <log> [reject_hellos] [mode].  reject_hellos
-(argv[3], default 0) is the number of initial DIAG_HELLOs to swallow.  mode
-(argv[4], default "0") is overloaded: "1" turns the datagram header on,
-"0" leaves it off, and "ssr" or "ssr_silent" additionally serve a fake
-vendor SSR service (0xFFE4) on <socket>.ssr -- "ssr" answers every request,
-"ssr_silent" logs them and never answers.
+The command line is <socket> <log> [reject_hellos] [datagram_header].
+reject_hellos (argv[3], default 0) is the number of initial DIAG_HELLOs to
+swallow.  datagram_header (argv[4], default "0") turns the SM8850-style
+datagram header on ("1") or off ("0").
+
+The modem restart the daemon's "ssr" command issues -- DIAG subsystem 0x25,
+command 3 -- is handled inline by the modem (it echoes and notes it), so no
+separate service is needed.
 
 The packet *layouts* are transcribed from qfenix's diag.c -- responses are
 built the way qfenix parses them and requests are parsed the way qfenix builds
@@ -39,6 +41,8 @@ import time
 DIAG_SUBSYS_CMD_F = 0x4B
 EFS_STD = 0x13
 EFS_ALT = 0x3E
+MODEM_RESTART_SUBSYS = 0x25   # native Qualcomm modem restart (DIAG subsys/cmd)
+MODEM_RESTART_OP = 3
 DIAG_BAD_CMD_F = 0x13
 DIAG_SPC_F = 0x41
 DIAG_BAD_SEC_MODE_F = 0x42
@@ -207,6 +211,15 @@ class Modem:
             if self.hellos <= self.reject_hellos:
                 self.note("reject hello #%d on purpose" % self.hellos)
                 return bytes([DIAG_BAD_CMD_F]) + pkt
+
+        if subsys == MODEM_RESTART_SUBSYS and op == MODEM_RESTART_OP:
+            # Native Qualcomm modem restart (what the daemon's "ssr" now sends).
+            # A real modem echoes the subsystem command and then drops the link;
+            # the mock just echoes so the daemon's best-effort recv sees it.
+            self.seen.append(("modem_restart", op))
+            self.note("modem restart requested (subsys 0x%02x op %d)"
+                      % (MODEM_RESTART_SUBSYS, op))
+            return bytes([DIAG_SUBSYS_CMD_F, MODEM_RESTART_SUBSYS]) + struct.pack("<H", op)
 
         if subsys != EFS_STD:
             # Only the standard subsystem exists here, so the daemon has to
@@ -467,6 +480,7 @@ class Modem:
 
     def op_48(self, pkt):                                  # SYNC_NO_WAIT
         seq = struct.unpack_from("<H", pkt, 4)[0]
+        self.note("journal sync started")
         return self.hdr(SYNC_NO_WAIT) + struct.pack("<HIi", seq, 0xC0FFEE, 0)
 
     def op_49(self, pkt):                                  # SYNC_GET_STATUS
@@ -539,54 +553,22 @@ def serve(path, logpath, reject_hellos=0, datagram_header=False):
 
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     srv.bind(path)
-    srv.listen(1)
+    srv.listen(4)
     log.write("mock modem listening on %s\n" % path)
     log.flush()
     print("ready", flush=True)
 
-    conn, _ = srv.accept()
-    log.write("daemon connected\n")
-    log.flush()
-
+    # Accept repeatedly: a modem restart drops the daemon's session and it
+    # reconnects afterwards, so one connection is not the whole story.  The
+    # filesystem lives outside the loop, the way flash survives a restart.
     while True:
         try:
-            blob = conn.recv(65536)
+            conn, _ = srv.accept()
         except OSError:
             break
-        if not blob:
-            break
+        log.write("daemon connected\n")
+        log.flush()
 
-        reply = modem.handle(blob)
-        if reply is None:
-            continue
-
-        conn.send(wrap(reply, datagram_header))
-
-    log.write("connection closed; ops seen: %d\n" % len(modem.seen))
-    log.flush()
-
-
-def serve_ssr(path, logpath, mode):
-    """A fake vendor QMI service (0xFFE4) on its own socket: <mock>.ssr.
-
-    Accepts connections forever (the daemon opens one per ssr command) and,
-    in mode "ssr", answers each request with the 508-byte response shape seen
-    in mtb's log: the kernel-QMI response flag 0x02 plus the request's
-    transaction and message ids echoed back.  The daemon discriminates on
-    that echo alone, not on the flag byte.
-    """
-    if os.path.exists(path):
-        os.unlink(path)
-    log = open(logpath, "w")
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-    srv.bind(path)
-    srv.listen(4)
-    log.write("fake ssr service listening on %s (mode %s)\n" % (path, mode))
-    log.flush()
-    print("ssr-ready", flush=True)
-
-    while True:
-        conn, _ = srv.accept()
         while True:
             try:
                 blob = conn.recv(65536)
@@ -594,27 +576,25 @@ def serve_ssr(path, logpath, mode):
                 break
             if not blob:
                 break
-            log.write("ssr request: %d bytes\n" % len(blob))
-            log.flush()
-            if mode != "ssr" or len(blob) < 5:
+
+            reply = modem.handle(blob)
+            if reply is None:
                 continue
-            rsp = bytearray(508)
-            rsp[0] = 0x02                 # kernel-QMI response flag
-            rsp[1:3] = blob[1:3]          # transaction id echo
-            rsp[3:5] = blob[3:5]          # message id echo
-            conn.send(bytes(rsp))
+
+            try:
+                conn.send(wrap(reply, datagram_header))
+            except OSError:
+                # The client hung up mid-exchange -- which is exactly what the
+                # restart command looks like, since the daemon drops the
+                # session the moment it is sent.  A modem shrugs; so do we.
+                break
+
         conn.close()
+        log.write("connection closed; ops seen: %d\n" % len(modem.seen))
+        log.flush()
 
 
 if __name__ == "__main__":
-    import threading
-    mode = sys.argv[4] if len(sys.argv) > 4 else "0"
-    if mode in ("ssr", "ssr_silent"):
-        threading.Thread(
-            target=serve_ssr,
-            args=(sys.argv[1] + ".ssr", sys.argv[2] + ".ssr.log", mode),
-            daemon=True,
-        ).start()
     serve(sys.argv[1], sys.argv[2],
           int(sys.argv[3]) if len(sys.argv) > 3 else 0,
-          mode == "1")
+          (sys.argv[4] if len(sys.argv) > 4 else "0") == "1")

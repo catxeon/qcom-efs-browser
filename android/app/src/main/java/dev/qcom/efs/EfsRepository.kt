@@ -270,11 +270,17 @@ class EfsRepository(private val ctx: Context) {
     // ---- modem maintenance ----
 
     /**
-     * Asks the modem for a subsystem restart through the proprietary vendor
-     * QMI service, the same replay `mtb 11 0` performs. Only Xiaomi modems
-     * publish that service; elsewhere the daemon reports the lookup failure.
+     * Restarts the modem subsystem with the native Qualcomm DIAG request
+     * (subsystem 0x25, command 3) the daemon sends over the ordinary DIAG
+     * transport. Unlike a vendor QMI service it needs no special endpoint, so
+     * it works on any Qualcomm modem.
+     *
+     * The daemon commits the EFS journal first — an edit that is still only in
+     * the journal would be rolled back by the restart — then waits for the
+     * modem and rebuilds the session. Returns true when that session came
+     * back, false when the modem did not answer in time and a reconnect is
+     * needed. Takes several seconds by design.
      */
-    suspend fun modemSsr() {
-        client.cmd("ssr")
-    }
+    suspend fun modemSsr(): Boolean =
+        client.cmd("ssr").optBoolean("reconnected", false)
 }

@@ -185,7 +185,7 @@ private fun ReadyBody(
                     )
                 }
                 Text(
-                    text = "Changes reach the modem after a restart. On Xiaomi devices you can trigger it below; otherwise toggle airplane mode or reboot.",
+                    text = "Changes reach the modem after a restart. Trigger one below, or toggle airplane mode / reboot the phone.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 // Not gated on read-only: a restart writes nothing, and it is

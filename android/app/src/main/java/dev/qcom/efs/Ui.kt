@@ -3,6 +3,7 @@ package dev.qcom.efs
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,6 +27,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
@@ -50,7 +52,6 @@ private fun time(v: Int): String =
 @Composable
 fun App(vm: MainViewModel) {
     val state by vm.state.collectAsState()
-    val snackbar = remember { SnackbarHostState() }
 
     var showLog by remember { mutableStateOf(false) }
     var showNv by remember { mutableStateOf(false) }
@@ -93,15 +94,18 @@ fun App(vm: MainViewModel) {
     LaunchedEffect(state.pendingExport) {
         state.pendingExport?.let { exporter.launch(it.suggestedName) }
     }
+    // A platform toast rather than a Scaffold snackbar on purpose: a snackbar
+    // lives in the activity's own window, so an open dialog draws over it and
+    // dims it with its scrim, and the keyboard covers it outright.  The system
+    // draws a toast above both, which is the whole point of these messages.
     LaunchedEffect(state.toast) {
         state.toast?.let {
-            snackbar.showSnackbar(it)
+            Toast.makeText(ctx, it, Toast.LENGTH_LONG).show()
             vm.dismissToast()
         }
     }
 
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
                 title = {
@@ -175,6 +179,15 @@ fun App(vm: MainViewModel) {
                                 text = { Text("Flush EFS journal") },
                                 leadingIcon = { Icon(Icons.Filled.Sync, null) },
                                 onClick = { menu = false; vm.sync() },
+                            )
+                            // Greyed out under the read-only lock rather than
+                            // hidden: the helper would refuse it anyway, and
+                            // its own refusal reads as protocol, not English.
+                            DropdownMenuItem(
+                                text = { Text("Restart modem") },
+                                leadingIcon = { Icon(Icons.Filled.RestartAlt, null) },
+                                enabled = !state.readOnly,
+                                onClick = { menu = false; vm.modemSsr() },
                             )
                             HorizontalDivider()
                         }
@@ -977,8 +990,12 @@ private fun NvDialog(state: UiState, vm: MainViewModel, onDismiss: () -> Unit) {
 
 @Composable
 private fun RawDialog(vm: MainViewModel, onDismiss: () -> Unit) {
-    var hex by remember { mutableStateOf("4b1300000000") }
+    var hex by remember { mutableStateOf("") }
     var answer by remember { mutableStateOf("") }
+    // Dismissing the keyboard with Back hides it but leaves the field focused,
+    // so sending would recompose and the still-focused field would ask for the
+    // keyboard again.  Dropping focus on send keeps it down.
+    val focus = LocalFocusManager.current
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -996,7 +1013,8 @@ private fun RawDialog(vm: MainViewModel, onDismiss: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Button(
-                    onClick = { vm.rawSend(hex) { answer = it } },
+                    onClick = { focus.clearFocus(); vm.rawSend(hex) { answer = it } },
+                    enabled = hex.isNotBlank(),
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Send") }
                 if (answer.isNotEmpty()) {

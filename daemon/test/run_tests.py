@@ -50,25 +50,18 @@ class Client:
         return json.loads(line)
 
 
-def spawn(daemon_bin, tmp, tag, reject_hellos=0, datagram_header=False, extra=(),
-          ssr_mode=None):
-    """Starts a mock modem plus a daemon wired to it; returns (mock, daemon, client)."""
+def spawn(daemon_bin, tmp, tag, reject_hellos=0, datagram_header=False, extra=()):
+    """Starts a mock modem plus a daemon wired to it; returns (mock, daemon, client, log)."""
     mock_sock = os.path.join(tmp, "modem-%s.sock" % tag)
     mock_log = os.path.join(tmp, "modem-%s.log" % tag)
     name = "%s_%s" % (SOCKET_NAME, tag)
 
-    # the mock's shared 4th argv slot carries the datagram-header flag or an ssr mode, never both
     args = [sys.executable, os.path.join(HERE, "mock_modem.py"),
             mock_sock, mock_log, str(reject_hellos),
-            ssr_mode if ssr_mode else ("1" if datagram_header else "0")]
+            "1" if datagram_header else "0"]
     mock = subprocess.Popen(args, stdout=subprocess.PIPE)
-    line = mock.stdout.readline().strip()
-    # "ssr-ready" is printed by the SSR responder's own thread, so the two
-    # readiness lines can arrive in either order; skip the extra ones.
-    while line == b"ssr-ready":
-        line = mock.stdout.readline().strip()
-    if line != b"ready":
-        raise RuntimeError("mock modem failed to start: %r" % line)
+    if mock.stdout.readline().strip() != b"ready":
+        raise RuntimeError("mock modem failed to start")
 
     log = open(os.path.join(tmp, "daemon-%s.log" % tag), "w+")
     daemon = subprocess.Popen(
@@ -128,50 +121,62 @@ def test_transport(daemon_bin, tmp):
 
 
 def test_ssr(daemon_bin, tmp):
-    """The modem-restart replay: guarded, answered, and honest about absence."""
+    """The native Qualcomm modem restart: gated on open + writes, then it goes
+    out over the DIAG transport as subsystem 0x25 / command 3."""
+
+    # -- refused before a session exists ----------------------------------
+    mock, daemon, c, _ = spawn(daemon_bin, tmp, "ssr-noopen")
+    try:
+        r = c.cmd(cmd="ssr")
+        check("ssr is refused before open", r.get("ok") is False
+              and "not connected" in str(r.get("error")), r)
+    finally:
+        daemon.kill(); mock.kill()
 
     # -- refused while read-only ------------------------------------------
-    mock, daemon, c, _ = spawn(daemon_bin, tmp, "ssr-ro", ssr_mode="ssr")
+    mock, daemon, c, _ = spawn(daemon_bin, tmp, "ssr-ro")
     try:
         check("ssr starts with the session open", c.cmd(cmd="open").get("ok"))
         r = c.cmd(cmd="ssr")
-        check("ssr is refused while read-only", r.get("ok") is False, r)
+        check("ssr is refused while read-only", r.get("ok") is False
+              and "read-only" in str(r.get("error")), r)
     finally:
         daemon.kill(); mock.kill()
 
-    # -- answered ----------------------------------------------------------
-    mock, daemon, c, _ = spawn(daemon_bin, tmp, "ssr-ok", ssr_mode="ssr")
+    # -- issued over DIAG once writes are enabled -------------------------
+    mock, daemon, c, _ = spawn(daemon_bin, tmp, "ssr-ok")
     try:
         c.cmd(cmd="open")
         c.cmd(cmd="readonly", on=False)
+        # Leave an uncommitted write behind: that is what the restart has to
+        # flush, and without one there is deliberately nothing to flush.
+        r = c.cmd(cmd="write", path="/rw/ssr_pending.bin",
+                  data=base64.b64encode(b"pending").decode(), mode=0o644)
+        check("a write before the restart lands", r.get("ok") is True, r)
         r = c.cmd(cmd="ssr")
-        check("ssr succeeds when the service answers", r.get("ok") is True, r)
-    finally:
+        check("ssr succeeds", r.get("ok") is True, r)
+        check("and the session is back afterwards", r.get("reconnected") is True, r)
+        # The session really works again, not just in the daemon's bookkeeping.
+        r = c.cmd(cmd="ls", path="/")
+        check("commands work again without a manual reconnect", r.get("ok") is True, r)
         daemon.kill(); mock.kill()
-
-    # -- the service never answers ----------------------------------------
-    mock, daemon, c, _ = spawn(daemon_bin, tmp, "ssr-silent", ssr_mode="ssr_silent")
-    try:
-        c.cmd(cmd="open")
-        c.cmd(cmd="readonly", on=False)
-        r = c.cmd(cmd="ssr")
-        check("a silent ssr service reports no response",
-              r.get("ok") is False and "the SSR service did not answer" in str(r.get("error")), r)
+        with open(os.path.join(tmp, "modem-ssr-ok.log")) as f:
+            log = f.read()
+        check("the modem received the restart command (subsys 0x25 op 3)",
+              "modem restart requested" in log, log)
+        # The whole point of the flush: an uncommitted edit would be rolled
+        # back by the restart, so the journal has to be committed first.
+        check("the journal is flushed before the restart, not after",
+              "journal sync started" in log
+              and log.index("journal sync started") < log.index("modem restart requested"),
+              log)
+        check("and the daemon reconnected to the modem",
+              log.count("daemon connected") >= 2, log)
     finally:
-        daemon.kill(); mock.kill()
-
-    # -- the service is not published (every non-Xiaomi device) ------------
-    # In mock mode the fake 0xFFE4 endpoint lives on <mock>.ssr, so its
-    # absence surfaces as the failed connect to that socket.
-    mock, daemon, c, _ = spawn(daemon_bin, tmp, "ssr-missing")
-    try:
-        c.cmd(cmd="open")
-        c.cmd(cmd="readonly", on=False)
-        r = c.cmd(cmd="ssr")
-        check("a missing ssr service says so",
-              r.get("ok") is False and ".ssr" in str(r.get("error")), r)
-    finally:
-        daemon.kill(); mock.kill()
+        if daemon.poll() is None:
+            daemon.kill()
+        if mock.poll() is None:
+            mock.kill()
 
 
 def main():

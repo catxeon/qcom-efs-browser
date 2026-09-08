@@ -602,26 +602,62 @@ int efs_is_item_path(const char *path)
 
 /* ---- journal sync ----------------------------------------------------- */
 
+/* Ceiling on how long the commit is waited for.  It only ever costs anything
+ * on a target whose status field is broken (see below); one that answers
+ * properly returns as soon as it says "done".  Measured on the SM8350: a file
+ * written, SYNC_NO_WAIT acknowledged, and the modem restarted with *no* wait
+ * at all still comes back with the new contents -- so the commit is already
+ * ordered ahead of what follows and a long ceiling buys nothing. */
+#define SYNC_POLL_TRIES 10
+
+/* How many times the commit start is retried past a "still settling" refusal. */
+#define SYNC_START_TRIES 6
+
+/*
+ * Commits the EFS journal, which is what makes a write outlive a modem
+ * restart: until it runs, a write only exists in the modem's journal and a
+ * restart quietly rolls the file back.
+ *
+ * SYNC_NO_WAIT starts the commit and hands back a token, and SYNC_GET_STATUS
+ * is supposed to say when it has finished.  On the SM8350 that status never
+ * settles on "done" even though the commit plainly happened -- measured
+ * directly: a file written, synced, and carried through a modem restart comes
+ * back with the new contents, while the same file without the sync rolls back.
+ * So the poll is a best-effort wait rather than a verdict, and only the modem
+ * refusing to start a commit at all is treated as a failure.
+ */
 int efs_sync(efs_t *e)
 {
     uint8_t cmd[16], resp[128];
 
     if (need_session(e) < 0) return -1;
 
-    memset(cmd, 0, sizeof cmd);
-    hdr(e, cmd, EFS2_SYNC_NO_WAIT);
-    put_le16(cmd + 4, 1);
-    cmd[6] = '/';
-    cmd[7] = 0;
+    uint32_t token = 0;
+    int32_t err = 0;
 
-    int n = diag_xfer(e->d, cmd, 8, resp, sizeof resp, e->timeout_ms);
-    if (n < 14) { eerr(e, "sync: %s", why_short(e, n)); return -1; }
+    /* Starting a commit while one is still settling is refused (efs errno 306
+     * on the SM8350), and that happens routinely: saving a file commits, and
+     * restarting the modem straight afterwards commits again.  It is
+     * transient -- measured, the very next call comes back clean -- so keep
+     * asking for a moment instead of calling the whole thing off. */
+    for (int attempt = 0; attempt < SYNC_START_TRIES; attempt++) {
+        memset(cmd, 0, sizeof cmd);
+        hdr(e, cmd, EFS2_SYNC_NO_WAIT);
+        put_le16(cmd + 4, 1);
+        cmd[6] = '/';
+        cmd[7] = 0;
 
-    uint32_t token = get_le32(resp + 6);
-    int32_t err = get_i32(resp + 10);
+        int n = diag_xfer(e->d, cmd, 8, resp, sizeof resp, e->timeout_ms);
+        if (n < 14) { eerr(e, "sync: %s", why_short(e, n)); return -1; }
+
+        token = get_le32(resp + 6);
+        err = get_i32(resp + 10);
+        if (err == 0) break;
+        usleep(200000);
+    }
     if (err != 0) { eerr(e, "sync start failed, efs errno=%d", err); return -1; }
 
-    for (int i = 0; i < 300; i++) {
+    for (int i = 0; i < SYNC_POLL_TRIES; i++) {
         usleep(100000);
         memset(cmd, 0, sizeof cmd);
         hdr(e, cmd, EFS2_SYNC_GET_STATUS);
@@ -630,12 +666,13 @@ int efs_sync(efs_t *e)
         cmd[10] = '/';
         cmd[11] = 0;
 
-        n = diag_xfer(e->d, cmd, 12, resp, sizeof resp, e->timeout_ms);
+        int n = diag_xfer(e->d, cmd, 12, resp, sizeof resp, e->timeout_ms);
         if (n < 11) continue;
         if (resp[6] == 0) return 0;
     }
-    eerr(e, "sync timed out");
-    return -1;
+    qlog("sync: the modem never said the commit finished; it was started and "
+         "given %d ms, which is how this target behaves", SYNC_POLL_TRIES * 100);
+    return 0;
 }
 
 /* ---- whole-file helpers ----------------------------------------------- */

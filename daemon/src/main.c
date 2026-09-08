@@ -11,7 +11,6 @@
  */
 #include "diag.h"
 #include "efs2.h"
-#include "ssr.h"
 #include "util.h"
 
 #include <errno.h>
@@ -33,11 +32,20 @@
 #define DEFAULT_SOCKET  "qcom_efsd"
 #define MAX_LINE        (4u * 1024 * 1024)
 #define MAX_INLINE_READ (512u * 1024)
+#define DIAG_SUBSYS_CMD_F 0x4B   /* DIAG dispatch byte for subsystem commands */
+
+/* How long the modem is given to come back before the session is rebuilt.
+ * Measured recovery on an SM8350 is ~2s; 8 leaves room for slower targets. */
+#define SSR_SETTLE_MS       8000
+#define SSR_SETTLE_MOCK_MS   200
 
 static diag_t g_diag;
 static efs_t  g_efs;
 static int    g_open = 0;
 static int    g_readonly = 1;
+/* Set by anything that can change EFS, cleared by a successful commit, so a
+ * restart knows whether it still has a journal to flush. */
+static int    g_journal_dirty = 0;
 
 /* ---- small helpers ---------------------------------------------------- */
 
@@ -325,14 +333,14 @@ static int rm_tree(const char *path, int depth)
 static int require_open(sbuf *o)
 {
     if (g_open) return 0;
-    fail(o, "not connected to the modem; send {\"cmd\":\"open\"} first");
+    fail(o, "not connected to the modem - connect first");
     return -1;
 }
 
 static int require_write(sbuf *o)
 {
     if (!g_readonly) return 0;
-    fail(o, "the daemon is in read-only mode; send {\"cmd\":\"readonly\",\"on\":false} first");
+    fail(o, "read-only mode is on - unlock writes first");
     return -1;
 }
 
@@ -346,24 +354,33 @@ static int get_path(const char *req, sbuf *o, char *path, size_t n)
     return 0;
 }
 
-static void cmd_open(sbuf *o)
+/* Brings up the DIAG transport and finds the EFS subsystem behind it.
+ * 0 on success; -1 with [err] filled in and the transport left closed. */
+static int session_open(char *err, size_t errsz)
 {
     if (g_open) { diag_close(&g_diag); g_open = 0; }
 
     if (diag_open(&g_diag) < 0) {
-        fail(o, "%s", diag_error(&g_diag));
+        snprintf(err, errsz, "%s", diag_error(&g_diag));
         diag_close(&g_diag);
-        return;
+        return -1;
     }
 
     efs_init(&g_efs, &g_diag);
 
     if (efs_detect(&g_efs) < 0) {
-        fail(o, "%s", g_efs.last_error);
+        snprintf(err, errsz, "%s", g_efs.last_error);
         diag_close(&g_diag);
-        return;
+        return -1;
     }
     g_open = 1;
+    return 0;
+}
+
+static void cmd_open(sbuf *o)
+{
+    char err[256];
+    if (session_open(err, sizeof err) < 0) { fail(o, "%s", err); return; }
 
     sb_fmt(o, "{\"ok\":true,\"transport\":\"%s\",\"subsys\":%d,\"readonly\":%s}",
            diag_transport_desc(&g_diag), g_efs.method,
@@ -687,9 +704,61 @@ static void cmd_raw(const char *req, sbuf *o)
 
 static void cmd_ssr(sbuf *o)
 {
+    /* An EFS write lands in the modem's journal first and only reaches flash
+     * when that journal is committed.  Restart before the commit and the file
+     * quietly rolls back to what was on flash -- which is exactly what "I
+     * edited a file, restarted the modem, and my edit was gone" looks like.
+     * So commit first.  A restart that would lose the edit is worse than no
+     * restart, so a failed flush aborts instead of carrying on.
+     *
+     * Only when there is something to commit, though: the modem refuses to
+     * start one while the previous is still settling (efs errno 306, for
+     * seconds afterwards), and saving a file already commits.  Flushing
+     * regardless would hit that refusal and cancel a restart that had nothing
+     * to lose in the first place. */
+    if (g_journal_dirty) {
+        if (efs_sync(&g_efs) < 0) {
+            fail(o, "could not flush the EFS journal, so the modem was left alone: %s",
+                 g_efs.last_error[0] ? g_efs.last_error : "sync failed");
+            return;
+        }
+        g_journal_dirty = 0;
+    }
+
+    /* Native Qualcomm modem restart: DIAG_SUBSYS_CMD_F on subsystem 0x25,
+     * command 0x0003, no payload.  This is the request Network Signal Guru
+     * issues when it restarts the modem, captured and confirmed on the SM8350
+     * (crash_count++, subsystem back ONLINE with both SIMs in service in ~2s).
+     * It needs no vendor endpoint -- it rides the ordinary DIAG transport, so
+     * it works on any Qualcomm modem, not just Xiaomi's 0xFFE4 QMI service. */
+    static const uint8_t req[4] = { DIAG_SUBSYS_CMD_F, 0x25, 0x03, 0x00 };
+    int was_mock = (g_diag.transport == DIAG_TP_MOCK);
+
+    if (diag_send(&g_diag, req, sizeof req) < 0) {
+        fail(o, "%s", diag_error(&g_diag));
+        return;
+    }
+    qlog("modem restart: journal flushed, restart request sent");
+
+    /* The modem takes the DIAG endpoint down with it, so the session we hold
+     * dies with it -- keeping it would leave the caller talking to a corpse.
+     * Drop it, give the modem time to come back, then build a fresh one so the
+     * caller can carry on without reconnecting by hand.  The mock has no modem
+     * to wait for, so tests do not pay the settle time. */
+    diag_close(&g_diag);
+    g_open = 0;
+    usleep((was_mock ? SSR_SETTLE_MOCK_MS : SSR_SETTLE_MS) * 1000);
+
     char err[256];
-    if (ssr_trigger(err, sizeof err) < 0) { fail(o, "%s", err); return; }
-    sb_str(o, "{\"ok\":true}");
+    if (session_open(err, sizeof err) < 0) {
+        qlog("modem restart: the session did not come back: %s", err);
+        sb_str(o, "{\"ok\":true,\"reconnected\":false,\"error\":");
+        sb_json_str(o, err);
+        sb_str(o, "}");
+        return;
+    }
+    qlog("modem restart: done, session re-established");
+    sb_str(o, "{\"ok\":true,\"reconnected\":true}");
 }
 
 static void dispatch(const char *req, sbuf *o)
@@ -732,10 +801,10 @@ static void dispatch(const char *req, sbuf *o)
         return;
     }
 
-    /* SSR is wedged-modem recovery: it uses neither the EFS session nor the
-     * DIAG transport, so it stays reachable even when open cannot complete.
-     * It still changes modem state, so the write gate holds. */
+    /* SSR restarts the modem over the DIAG transport, so the session must be
+     * open; it changes modem state, so the write gate holds too. */
     if (!strcmp(cmd, "ssr")) {
+        if (require_open(o) < 0) return;
         if (require_write(o) < 0) return;
         cmd_ssr(o);
         return;
@@ -776,8 +845,11 @@ static void dispatch(const char *req, sbuf *o)
     if (!strcmp(cmd, "nv_read")) { cmd_nv_read(req, o); return; }
 
     /* Everything below can change the modem -- "raw" included, since an
-     * arbitrary packet may well be a write. */
+     * arbitrary packet may well be a write.  Anything that gets past here may
+     * have left the EFS journal uncommitted, which is what a later restart has
+     * to flush; "sync" clears the mark again on its way out. */
     if (require_write(o) < 0) return;
+    g_journal_dirty = 1;
 
     if (!strcmp(cmd, "raw"))      { cmd_raw(req, o); return; }
     if (!strcmp(cmd, "write"))    { cmd_write(req, o); return; }
@@ -826,6 +898,7 @@ static void dispatch(const char *req, sbuf *o)
     }
     if (!strcmp(cmd, "sync")) {
         if (efs_sync(&g_efs) < 0) { fail_efs(o, &g_efs); return; }
+        g_journal_dirty = 0;
         sb_str(o, "{\"ok\":true}");
         return;
     }
@@ -917,9 +990,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-verbose"))                 g_verbose = 1;
         else if (!strcmp(argv[i], "-rw"))                      g_readonly = 0;
         else if (!strcmp(argv[i], "-mock") && i + 1 < argc) {
-            const char *m = argv[++i];
-            diag_set_mock(m);
-            ssr_set_mock(m);
+            diag_set_mock(argv[++i]);
         }
         else if (!strcmp(argv[i], "-qrtr") && i + 1 < argc) {
             unsigned long node = 0, port = 0;
