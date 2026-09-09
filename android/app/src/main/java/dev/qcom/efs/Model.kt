@@ -34,6 +34,12 @@ data class EfsEntry(
     }
 }
 
+/** Sort keys offered by the browser's sort menu. */
+enum class SortKey { NAME, SIZE, DATE }
+
+/** Useful default direction when a key is first picked: Size/Date descending, Name ascending. */
+val SortKey.defaultDescending: Boolean get() = this != SortKey.NAME
+
 data class EfsStat(
     val path: String,
     val type: String,
@@ -116,6 +122,38 @@ fun humanSize(bytes: Long): String = when {
     else -> String.format("%.1f MiB", bytes / (1024.0 * 1024))
 }
 
+// ---- filtering and sorting, for the browser list ------------------------
+
+/**
+ * Case-insensitive substring match on the entry name.  A blank query matches
+ * everything, so the caller never special-cases it.
+ */
+fun List<EfsEntry>.filterByName(query: String): List<EfsEntry> {
+    val q = query.trim()
+    if (q.isEmpty()) return this
+    return filter { it.name.contains(q, ignoreCase = true) }
+}
+
+/**
+ * Dirs first, always; within each group by [key].  [descending] flips the key
+ * order but never the dirs-first grouping.  Every ordering ends with name
+ * tiebreaks (case-insensitive, then case-sensitive, the latter running
+ * opposite to the sort direction), so the result is fully deterministic.
+ */
+fun List<EfsEntry>.sortedBy(key: SortKey, descending: Boolean): List<EfsEntry> {
+    val byName = compareBy<EfsEntry> { it.name.lowercase() }
+    val byKey: Comparator<EfsEntry> = when (key) {
+        SortKey.NAME -> byName
+        SortKey.SIZE -> compareBy { it.size }
+        SortKey.DATE -> compareBy { it.mtime }
+    }
+    val primary = if (descending) byKey.reversed() else byKey
+    val byRawName = if (descending) compareBy<EfsEntry> { it.name } else compareByDescending<EfsEntry> { it.name }
+    return sortedWith(
+        compareByDescending<EfsEntry> { it.isDir }.then(primary).then(byName).then(byRawName),
+    )
+}
+
 // ---- text and hex, for previewing and editing ---------------------------
 
 /** Mostly printable, so a text view of it is worth offering. */
@@ -165,5 +203,16 @@ fun parseHexText(text: String): ByteArray {
         ((Character.digit(digits[it * 2], 16) shl 4) or Character.digit(digits[it * 2 + 1], 16)).toByte()
     }
 }
+
+/**
+ * A hue (degrees, 0 to under 360) for a byte value, for tinting hex bytes in
+ * the preview sheet.  Multiplying by 97 scrambles the value over the wheel --
+ * 97 is coprime with 256, so every byte gets its own hue and neighbouring
+ * values land about 137 degrees apart instead of blending into each other.
+ * The scale divides by 256 rather than 255, so no hue ever lands exactly on
+ * 360 and wraps back onto 0's colour.  Pure and deterministic: a value always
+ * reads the same colour, in any view, after any restart.
+ */
+fun byteHue(value: Int): Float = ((value and 0xFF) * 97 and 0xFF) / 256f * 360f
 
 private const val HEX = "0123456789abcdef"

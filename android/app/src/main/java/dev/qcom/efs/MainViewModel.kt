@@ -122,6 +122,14 @@ data class UiState(
     val info: DaemonInfo? = null,
     val path: String = "/",
     val entries: List<EfsEntry> = emptyList(),
+    /** True while the top bar shows the current-directory search field. */
+    val searchActive: Boolean = false,
+    /** Name filter for the current directory; blank means no filtering. */
+    val searchQuery: String = "",
+    /** Sort of the browser list; chosen key and direction persist across runs. */
+    val sortKey: SortKey = SortKey.NAME,
+    /** False: Name A-Z, Size smallest, Date oldest.  True flips the order. */
+    val sortDescending: Boolean = false,
     val busy: Boolean = false,
     val busyLabel: String? = null,
     val readOnly: Boolean = true,
@@ -182,6 +190,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // Main.immediate, so the check runs synchronously during construction and
     // a lazy declared further down would still be null.
     init {
+        val saved = prefs.getString("sort_key", null)
+        val key = SortKey.entries.firstOrNull { it.name == saved }
+        _state.update {
+            it.copy(
+                sortKey = key ?: SortKey.NAME,
+                // The pair is always written together, so a stray sort_desc is
+                // noise; an unknown key resets the direction along with it.
+                sortDescending = if (key != null) prefs.getBoolean("sort_desc", false) else false,
+            )
+        }
         checkForUpdates(manual = false)
     }
 
@@ -250,6 +268,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 verbose = it.verbose,
                 localEnforce = it.localEnforce,
                 log = it.log,
+                sortKey = it.sortKey,
+                sortDescending = it.sortDescending,
             )
         }
     }
@@ -266,6 +286,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 verbose = it.verbose,
                 localEnforce = it.localEnforce,
                 log = it.log,
+                sortKey = it.sortKey,
+                sortDescending = it.sortDescending,
                 exitAfterDisconnect = true,
             )
         }
@@ -289,7 +311,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun open(path: String) = work("reading $path") {
         val entries = repo.list(path)
-        _state.update { it.copy(path = path, entries = entries).withoutSheet() }
+        // A move to a different directory ends the search (a re-read of the
+        // same path -- refresh, post-mutation re-lists -- keeps it).
+        val moved = path != _state.value.path
+        _state.update {
+            val s = it.copy(path = path, entries = entries).withoutSheet()
+            if (moved) s.copy(searchActive = false, searchQuery = "") else s
+        }
     }
 
     fun refresh() = open(_state.value.path)
@@ -297,6 +325,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun up() {
         val p = _state.value.path
         if (p != "/") open(Paths.parent(p))
+    }
+
+    // ---- search and sorting --------------------------------------------
+
+    fun openSearch() = _state.update { it.copy(searchActive = true) }
+
+    fun closeSearch() = _state.update { it.copy(searchActive = false, searchQuery = "") }
+
+    fun setSearchQuery(query: String) = _state.update { it.copy(searchQuery = query) }
+
+    /**
+     * First tap picks a key with its useful default direction (Name A-Z, Size
+     * largest first, Date newest first); tapping the active key again flips it.
+     */
+    fun chooseSort(key: SortKey) {
+        val (next, desc) = _state.value.let { s ->
+            if (s.sortKey == key) key to !s.sortDescending
+            else key to key.defaultDescending
+        }
+        prefs.edit().putString("sort_key", next.name).putBoolean("sort_desc", desc).apply()
+        _state.update { it.copy(sortKey = next, sortDescending = desc) }
     }
 
     fun onEntryClicked(entry: EfsEntry) {
