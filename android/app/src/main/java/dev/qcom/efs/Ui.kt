@@ -816,8 +816,10 @@ private fun InlinePreview(data: PreviewData) {
     }
     // Colouring the hex bytes is a value->colour mapping, so it is rebuilt
     // only when the data (or the theme) changes, not on every recomposition.
+    // Zero bytes stay in the background: faded grey instead of a colour.
     val dark = isSystemInDarkTheme()
-    val dump = remember(data, dark) { hexDump(data.bytes, dark) }
+    val zero = LocalContentColor.current.copy(alpha = 0.35f)
+    val dump = remember(data, dark, zero) { hexDump(data.bytes, dark, zero) }
     SelectionContainer {
         // Hex rows must not wrap, so they get their own horizontal scroll;
         // text is easier to read wrapped.  Vertical scrolling is the sheet's.
@@ -985,10 +987,17 @@ private fun EditorDialog(
  * A hex dump where every byte pair is tinted by its value ([byteHue]), so
  * equal bytes show up as equal colours and patterns strike the eye.  The hue
  * is the same on any surface; only the lightness follows the theme, so the
- * pairs stay readable on both light and dark sheets.  Offsets and the ASCII
- * gutter keep the default text colour.
+ * pairs stay readable on both light and dark sheets.  Zero bytes are padding
+ * rather than data, so they opt out of the colour wheel and render in
+ * [zeroColor] -- a faded grey that lets the actual bytes stand out.  Offsets
+ * and the ASCII gutter keep the default text colour.
  */
-private fun hexDump(bytes: ByteArray, dark: Boolean, limit: Int = 8192): AnnotatedString =
+private fun hexDump(
+    bytes: ByteArray,
+    dark: Boolean,
+    zeroColor: Color = Color.Unspecified,
+    limit: Int = 8192,
+): AnnotatedString =
     buildAnnotatedString {
         val pairLightness = if (dark) 0.74f else 0.38f
         val n = minOf(bytes.size, limit)
@@ -998,7 +1007,10 @@ private fun hexDump(bytes: ByteArray, dark: Boolean, limit: Int = 8192): Annotat
             for (j in 0 until 16) {
                 if (i + j < n) {
                     val b = bytes[i + j]
-                    withStyle(SpanStyle(color = Color.hsl(byteHue(b.toInt()), 0.8f, pairLightness))) {
+                    val color =
+                        if (b.toInt() == 0) zeroColor
+                        else Color.hsl(byteHue(b.toInt()), 0.8f, pairLightness)
+                    withStyle(SpanStyle(color = color)) {
                         append(String.format("%02x", b))
                     }
                     append(' ')
