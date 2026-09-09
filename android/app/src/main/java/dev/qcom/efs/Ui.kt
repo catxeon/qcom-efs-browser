@@ -592,8 +592,12 @@ private fun BrowserScreen(state: UiState, vm: MainViewModel) {
         state.entries.filterByName(state.searchQuery).sortedBy(state.sortKey, state.sortDescending)
     }
 
-    // Typing shrinks the list; each change starts from the top again.
-    LaunchedEffect(state.searchQuery) { listState.scrollToItem(0) }
+    // Typing shrinks the list and a new sort reshuffles it; either way the
+    // answer the user is looking for is at the top, so start there rather
+    // than leaving them wherever the old order had them scrolled to.
+    LaunchedEffect(state.searchQuery, state.sortKey, state.sortDescending) {
+        listState.scrollToItem(0)
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
