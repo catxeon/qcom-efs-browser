@@ -369,13 +369,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Commits the EFS journal after a write.  Until this runs the change only
+     * Commits the EFS journal after a change.  Until this runs the change only
      * exists in the modem's journal, and a modem restart rolls it straight
-     * back — so a save that is not committed is not really saved.  Returns
-     * text to append to the toast when the commit did not go through, since
-     * the write itself did happen and saying nothing would be a lie.
+     * back — so a save that is not committed is not really saved.  Every
+     * mutation needs it, not just file writes: a deleted file comes back and a
+     * new directory disappears just the same.  Returns text to append to the
+     * toast when the commit did not go through, since the change itself did
+     * happen and saying nothing would be a lie.
      */
-    private suspend fun commitWrite(): String =
+    private suspend fun commitChange(): String =
         runCatching { repo.sync() }.fold(
             { "" },
             { " (journal flush failed - it may not survive a modem restart)" },
@@ -385,7 +387,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val ed = _state.value.editor ?: return
         work("writing ${ed.path}") {
             repo.writeFile(ed.path, bytes, ed.mode, ed.isItem)
-            val warn = commitWrite()
+            val warn = commitChange()
             val entries = repo.list(_state.value.path)
             _state.update {
                 it.copy(
@@ -442,7 +444,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         work("writing $targetPath") {
         val bytes = repo.readUri(uri)
         repo.writeFile(targetPath, bytes, item = asItem)
-        val warn = commitWrite()
+        val warn = commitChange()
         val kind = if (asItem == true) "item file" else "file"
         _state.update { it.copy(toast = "Wrote ${bytes.size} bytes as a $kind$warn") }
         val entries = repo.list(_state.value.path)
@@ -703,6 +705,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 noteFeatures(error)
                 return@launch
             }
+            // The item files this just wrote are still only in the journal,
+            // and the modem restart the dialog asks for would roll them
+            // straight back, so commit before anything else.
+            if (commitChange().isNotEmpty()) {
+                noteFeatures(
+                    "The feature was written, but flushing the EFS journal failed - " +
+                        "it may not survive the modem restart.",
+                )
+            }
             // A successful write is not proof the feature is off: ul_mimo and
             // lowband_4rx share cap_limit_rf_mimo with mutually exclusive
             // payloads, so disabling one re-enables the other.  Re-read every
@@ -810,21 +821,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun createDir(name: String) = work("creating $name") {
         repo.mkdir(Paths.child(_state.value.path, name))
+        val warn = commitChange()
         val entries = repo.list(_state.value.path)
-        _state.update { it.copy(entries = entries, toast = "Created $name") }
+        _state.update { it.copy(entries = entries, toast = "Created $name$warn") }
     }
 
     fun chmod(path: String, mode: Int) = work("chmod") {
         repo.chmod(path, mode)
+        val warn = commitChange()
         val entries = repo.list(_state.value.path)
-        _state.update { it.copy(entries = entries, toast = "Mode changed") }
+        _state.update { it.copy(entries = entries, toast = "Mode changed$warn") }
     }
 
     fun delete(detail: Detail) = work("deleting ${detail.path}") {
         repo.delete(detail.entry, detail.path)
+        val warn = commitChange()
         val entries = repo.list(_state.value.path)
         _state.update {
-            it.copy(entries = entries, toast = "Deleted ${detail.entry.name}").withoutSheet()
+            it.copy(entries = entries, toast = "Deleted ${detail.entry.name}$warn").withoutSheet()
         }
     }
 
@@ -846,7 +860,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun nvWrite(item: Int, hex: String, index: Int?) = work("writing NV $item") {
         repo.nvWrite(item, hex, index)
-        _state.update { it.copy(toast = "NV item $item written") }
+        // NV items live in EFS on this generation of modem, so an NV write is
+        // journaled like any other and needs the same commit.
+        val warn = commitChange()
+        _state.update { it.copy(toast = "NV item $item written$warn") }
     }
 
     fun spcUnlock(spc: String) = work("sending the SPC") {
