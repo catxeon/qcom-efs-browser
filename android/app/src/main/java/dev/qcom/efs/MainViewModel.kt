@@ -265,6 +265,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 verbose = it.verbose,
                 localEnforce = it.localEnforce,
                 log = it.log,
+                sortKey = it.sortKey,
+                sortDescending = it.sortDescending,
             )
         }
     }
@@ -281,6 +283,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 verbose = it.verbose,
                 localEnforce = it.localEnforce,
                 log = it.log,
+                sortKey = it.sortKey,
+                sortDescending = it.sortDescending,
                 exitAfterDisconnect = true,
             )
         }
@@ -317,7 +321,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun chooseSort(key: SortKey) {
         val (next, desc) = _state.value.let { s ->
             if (s.sortKey == key) key to !s.sortDescending
-            else key to (key != SortKey.NAME)
+            else key to key.defaultDescending
         }
         prefs.edit().putString("sort_key", next.name).putBoolean("sort_desc", desc).apply()
         _state.update { it.copy(sortKey = next, sortDescending = desc) }

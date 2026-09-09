@@ -37,6 +37,9 @@ data class EfsEntry(
 /** Sort keys offered by the browser's sort menu. */
 enum class SortKey { NAME, SIZE, DATE }
 
+/** Useful default direction when a key is first picked: Size/Date descending, Name ascending. */
+val SortKey.defaultDescending: Boolean get() = this != SortKey.NAME
+
 data class EfsStat(
     val path: String,
     val type: String,
@@ -133,8 +136,9 @@ fun List<EfsEntry>.filterByName(query: String): List<EfsEntry> {
 
 /**
  * Dirs first, always; within each group by [key].  [descending] flips the key
- * order but never the dirs-first grouping.  Every ordering ends with a
- * lowercase-name tiebreak, so the result is fully deterministic.
+ * order but never the dirs-first grouping.  Every ordering ends with name
+ * tiebreaks (case-insensitive, then case-sensitive, the latter running
+ * opposite to the sort direction), so the result is fully deterministic.
  */
 fun List<EfsEntry>.sortedBy(key: SortKey, descending: Boolean): List<EfsEntry> {
     val byName = compareBy<EfsEntry> { it.name.lowercase() }
@@ -144,7 +148,10 @@ fun List<EfsEntry>.sortedBy(key: SortKey, descending: Boolean): List<EfsEntry> {
         SortKey.DATE -> compareBy { it.mtime }
     }
     val primary = if (descending) byKey.reversed() else byKey
-    return sortedWith(compareByDescending<EfsEntry> { it.isDir }.then(primary).then(byName))
+    val byRawName = if (descending) compareBy<EfsEntry> { it.name } else compareByDescending<EfsEntry> { it.name }
+    return sortedWith(
+        compareByDescending<EfsEntry> { it.isDir }.then(primary).then(byName).then(byRawName),
+    )
 }
 
 // ---- text and hex, for previewing and editing ---------------------------

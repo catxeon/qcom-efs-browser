@@ -164,7 +164,7 @@ fun App(vm: MainViewModel) {
                                     val active = state.sortKey == key
                                     DropdownMenuItem(
                                         text = {
-                                            Text(sortLabel(key, if (active) state.sortDescending else key != SortKey.NAME))
+                                            Text(sortLabel(key, if (active) state.sortDescending else key.defaultDescending))
                                         },
                                         leadingIcon = {
                                             if (active) Icon(Icons.Filled.Check, null) else null
@@ -625,7 +625,7 @@ private fun BrowserScreen(state: UiState, vm: MainViewModel) {
         // so it gets its own message.
         if (visible.isEmpty() && !state.busy) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No matches for \u201c${state.searchQuery}\u201d", style = MaterialTheme.typography.bodyMedium)
+                Text("No matches for “${state.searchQuery}”", style = MaterialTheme.typography.bodyMedium)
             }
             return@Column
         }
