@@ -34,6 +34,9 @@ data class EfsEntry(
     }
 }
 
+/** Sort keys offered by the browser's sort menu. */
+enum class SortKey { NAME, SIZE, DATE }
+
 data class EfsStat(
     val path: String,
     val type: String,
@@ -114,6 +117,34 @@ fun humanSize(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024 * 1024 -> String.format("%.1f KiB", bytes / 1024.0)
     else -> String.format("%.1f MiB", bytes / (1024.0 * 1024))
+}
+
+// ---- filtering and sorting, for the browser list ------------------------
+
+/**
+ * Case-insensitive substring match on the entry name.  A blank query matches
+ * everything, so the caller never special-cases it.
+ */
+fun List<EfsEntry>.filterByName(query: String): List<EfsEntry> {
+    val q = query.trim()
+    if (q.isEmpty()) return this
+    return filter { it.name.contains(q, ignoreCase = true) }
+}
+
+/**
+ * Dirs first, always; within each group by [key].  [descending] flips the key
+ * order but never the dirs-first grouping.  Every ordering ends with a
+ * lowercase-name tiebreak, so the result is fully deterministic.
+ */
+fun List<EfsEntry>.sortedBy(key: SortKey, descending: Boolean): List<EfsEntry> {
+    val byName = compareBy<EfsEntry> { it.name.lowercase() }
+    val byKey: Comparator<EfsEntry> = when (key) {
+        SortKey.NAME -> byName
+        SortKey.SIZE -> compareBy { it.size }
+        SortKey.DATE -> compareBy { it.mtime }
+    }
+    val primary = if (descending) byKey.reversed() else byKey
+    return sortedWith(compareByDescending<EfsEntry> { it.isDir }.then(primary).then(byName))
 }
 
 // ---- text and hex, for previewing and editing ---------------------------
