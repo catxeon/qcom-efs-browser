@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -32,11 +33,15 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -809,11 +814,15 @@ private fun InlinePreview(data: PreviewData) {
         Spacer(Modifier.weight(1f))
         Text(humanSize(data.bytes.size.toLong()), style = MaterialTheme.typography.labelSmall)
     }
+    // Colouring the hex bytes is a value->colour mapping, so it is rebuilt
+    // only when the data (or the theme) changes, not on every recomposition.
+    val dark = isSystemInDarkTheme()
+    val dump = remember(data, dark) { hexDump(data.bytes, dark) }
     SelectionContainer {
         // Hex rows must not wrap, so they get their own horizontal scroll;
         // text is easier to read wrapped.  Vertical scrolling is the sheet's.
         Text(
-            if (asText) String(data.bytes, Charsets.ISO_8859_1) else hexDump(data.bytes),
+            if (asText) AnnotatedString(String(data.bytes, Charsets.ISO_8859_1)) else dump,
             if (asText) Modifier else Modifier.horizontalScroll(rememberScrollState()),
             softWrap = asText,
             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
@@ -972,26 +981,43 @@ private fun EditorDialog(
     }
 }
 
-private fun hexDump(bytes: ByteArray, limit: Int = 8192): String = buildString {
-    val n = minOf(bytes.size, limit)
-    var i = 0
-    while (i < n) {
-        append(String.format("%08x  ", i))
-        for (j in 0 until 16) {
-            if (i + j < n) append(String.format("%02x ", bytes[i + j])) else append("   ")
-            if (j == 7) append(' ')
+/**
+ * A hex dump where every byte pair is tinted by its value ([byteHue]), so
+ * equal bytes show up as equal colours and patterns strike the eye.  The hue
+ * is the same on any surface; only the lightness follows the theme, so the
+ * pairs stay readable on both light and dark sheets.  Offsets and the ASCII
+ * gutter keep the default text colour.
+ */
+private fun hexDump(bytes: ByteArray, dark: Boolean, limit: Int = 8192): AnnotatedString =
+    buildAnnotatedString {
+        val pairLightness = if (dark) 0.74f else 0.38f
+        val n = minOf(bytes.size, limit)
+        var i = 0
+        while (i < n) {
+            append(String.format("%08x  ", i))
+            for (j in 0 until 16) {
+                if (i + j < n) {
+                    val b = bytes[i + j]
+                    withStyle(SpanStyle(color = Color.hsl(byteHue(b.toInt()), 0.8f, pairLightness))) {
+                        append(String.format("%02x", b))
+                    }
+                    append(' ')
+                } else {
+                    append("   ")
+                }
+                if (j == 7) append(' ')
+            }
+            append(" |")
+            for (j in 0 until 16) {
+                if (i + j >= n) break
+                val c = bytes[i + j].toInt() and 0xFF
+                append(if (c in 32..126) c.toChar() else '.')
+            }
+            append("|\n")
+            i += 16
         }
-        append(" |")
-        for (j in 0 until 16) {
-            if (i + j >= n) break
-            val c = bytes[i + j].toInt() and 0xFF
-            append(if (c in 32..126) c.toChar() else '.')
-        }
-        append("|\n")
-        i += 16
+        if (bytes.size > limit) append("… ${bytes.size - limit} more bytes\n")
     }
-    if (bytes.size > limit) append("… ${bytes.size - limit} more bytes\n")
-}
 
 @Composable
 private fun LogDialog(state: UiState, onRefresh: () -> Unit, onDismiss: () -> Unit) {

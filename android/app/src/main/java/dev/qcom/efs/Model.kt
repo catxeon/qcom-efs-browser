@@ -204,4 +204,15 @@ fun parseHexText(text: String): ByteArray {
     }
 }
 
+/**
+ * A hue (degrees, 0 to under 360) for a byte value, for tinting hex bytes in
+ * the preview sheet.  Multiplying by 97 scrambles the value over the wheel --
+ * 97 is coprime with 256, so every byte gets its own hue and neighbouring
+ * values land about 137 degrees apart instead of blending into each other.
+ * The scale divides by 256 rather than 255, so no hue ever lands exactly on
+ * 360 and wraps back onto 0's colour.  Pure and deterministic: a value always
+ * reads the same colour, in any view, after any restart.
+ */
+fun byteHue(value: Int): Float = ((value and 0xFF) * 97 and 0xFF) / 256f * 360f
+
 private const val HEX = "0123456789abcdef"
