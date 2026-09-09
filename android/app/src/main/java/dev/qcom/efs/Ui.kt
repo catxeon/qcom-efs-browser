@@ -548,10 +548,17 @@ private fun ConnectScreen(state: UiState, vm: MainViewModel) {
 private fun BrowserScreen(state: UiState, vm: MainViewModel) {
     var confirmExit by remember { mutableStateOf(false) }
 
-    // The system back gesture walks up the tree, exactly like the arrow in the
-    // toolbar.  At the root there is nowhere left to go, so it offers the exit
-    // -- which closes the session rather than leaving the helper behind.
-    BackHandler { if (state.path != "/") vm.up() else confirmExit = true }
+    // The system back gesture closes an active search first, then walks up
+    // the tree exactly like the arrow in the toolbar.  At the root there is
+    // nowhere left to go, so it offers the exit -- which closes the session
+    // rather than leaving the helper behind.
+    BackHandler {
+        when {
+            state.searchActive -> vm.closeSearch()
+            state.path != "/" -> vm.up()
+            else -> confirmExit = true
+        }
+    }
 
     if (confirmExit) {
         AlertDialog(
@@ -572,6 +579,16 @@ private fun BrowserScreen(state: UiState, vm: MainViewModel) {
     // refresh button, a delete) keeps the position, since the key is unchanged.
     val listState = rememberLazyListState()
     LaunchedEffect(state.path) { listState.scrollToItem(0) }
+
+    // The visible list derives from the repository's listing: name filter,
+    // then the chosen sort.  The repository's own dirs-first order stays the
+    // data source; this only reorders (and hides) entries.
+    val visible = remember(state.entries, state.searchQuery, state.sortKey, state.sortDescending) {
+        state.entries.filterByName(state.searchQuery).sortedBy(state.sortKey, state.sortDescending)
+    }
+
+    // Typing shrinks the list; each change starts from the top again.
+    LaunchedEffect(state.searchQuery) { listState.scrollToItem(0) }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -603,8 +620,18 @@ private fun BrowserScreen(state: UiState, vm: MainViewModel) {
             return@Column
         }
 
+        // A filter can hide every entry of a non-empty directory -- that is a
+        // different situation from the modem reporting an empty directory,
+        // so it gets its own message.
+        if (visible.isEmpty() && !state.busy) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No matches for \u201c${state.searchQuery}\u201d", style = MaterialTheme.typography.bodyMedium)
+            }
+            return@Column
+        }
+
         LazyColumn(Modifier.fillMaxSize(), state = listState) {
-            items(state.entries, key = { it.name }) { entry ->
+            items(visible, key = { it.name }) { entry ->
                 ListItem(
                     headlineContent = { Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     supportingContent = {
