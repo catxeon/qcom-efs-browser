@@ -14,6 +14,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check the helper and the app carry the same version
+        run: |
+          app=$(grep -m1 versionName android/app/build.gradle.kts | cut -d'"' -f2)
+          helper=$(grep -m1 QEFSD_VERSION daemon/src/main.c | cut -d'"' -f2)
+          echo "app $app, helper $helper"
+          test -n "$app" && test "$app" = "$helper"
+
       - name: Build the helper for the host and run the protocol tests
         run: |
           mkdir -p build
