@@ -32,7 +32,7 @@
  * shows this string in its title bar, so a helper that claims a different
  * version than the app it shipped with is only confusing.  CI fails the
  * build when the two drift apart. */
-#define QEFSD_VERSION   "1.4.1"
+#define QEFSD_VERSION   "1.4.2"
 #define DEFAULT_SOCKET  "qcom_efsd"
 #define MAX_LINE        (4u * 1024 * 1024)
 #define MAX_INLINE_READ (512u * 1024)
