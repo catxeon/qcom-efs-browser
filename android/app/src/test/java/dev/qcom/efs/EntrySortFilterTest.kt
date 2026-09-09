@@ -111,6 +111,29 @@ class EntrySortFilterTest {
         assertEquals(listOf("B.txt", "b.txt", "a.txt"), dupes.sortedBy(SortKey.NAME, true).map { it.name })
     }
 
+    @Test
+    fun `size sort keeps dirs first when sizes tie across groups`() {
+        val entries = listOf(
+            e("file", size = 500),
+            e("dir", size = 500, type = "dir"),
+        )
+        assertEquals(listOf("dir", "file"), entries.sortedBy(SortKey.SIZE, false).map { it.name })
+        assertEquals(listOf("dir", "file"), entries.sortedBy(SortKey.SIZE, true).map { it.name })
+    }
+
+    @Test
+    fun `query is trimmed before matching`() {
+        // Filtering never reorders: the listing order is kept.
+        assertEquals(listOf("dir2", "DIR"), sample.filterByName(" dir ").map { it.name })
+    }
+
+    @Test
+    fun `case-equal ties under size also stay name-determined`() {
+        val pair = listOf(e("z", size = 5), e("Z", size = 5))
+        assertEquals(listOf("z", "Z"), pair.sortedBy(SortKey.SIZE, false).map { it.name })
+        assertEquals(listOf("Z", "z"), pair.sortedBy(SortKey.SIZE, true).map { it.name })
+    }
+
     // ---- combined and determinism ----
 
     @Test

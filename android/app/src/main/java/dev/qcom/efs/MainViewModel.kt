@@ -191,10 +191,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // a lazy declared further down would still be null.
     init {
         val saved = prefs.getString("sort_key", null)
+        val key = SortKey.entries.firstOrNull { it.name == saved }
         _state.update {
             it.copy(
-                sortKey = SortKey.entries.firstOrNull { k -> k.name == saved } ?: SortKey.NAME,
-                sortDescending = prefs.getBoolean("sort_desc", false),
+                sortKey = key ?: SortKey.NAME,
+                // The pair is always written together, so a stray sort_desc is
+                // noise; an unknown key resets the direction along with it.
+                sortDescending = if (key != null) prefs.getBoolean("sort_desc", false) else false,
             )
         }
         checkForUpdates(manual = false)
@@ -306,6 +309,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- browsing ------------------------------------------------------
 
+    fun open(path: String) = work("reading $path") {
+        val entries = repo.list(path)
+        // A move to a different directory ends the search (a re-read of the
+        // same path -- refresh, post-mutation re-lists -- keeps it).
+        val moved = path != _state.value.path
+        _state.update {
+            val s = it.copy(path = path, entries = entries).withoutSheet()
+            if (moved) s.copy(searchActive = false, searchQuery = "") else s
+        }
+    }
+
+    fun refresh() = open(_state.value.path)
+
+    fun up() {
+        val p = _state.value.path
+        if (p != "/") open(Paths.parent(p))
+    }
+
     // ---- search and sorting --------------------------------------------
 
     fun openSearch() = _state.update { it.copy(searchActive = true) }
@@ -325,24 +346,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         prefs.edit().putString("sort_key", next.name).putBoolean("sort_desc", desc).apply()
         _state.update { it.copy(sortKey = next, sortDescending = desc) }
-    }
-
-    fun open(path: String) = work("reading $path") {
-        val entries = repo.list(path)
-        // A move to a different directory ends the search (a re-read of the
-        // same path -- refresh, post-mutation re-lists -- keeps it).
-        val moved = path != _state.value.path
-        _state.update {
-            val s = it.copy(path = path, entries = entries).withoutSheet()
-            if (moved) s.copy(searchActive = false, searchQuery = "") else s
-        }
-    }
-
-    fun refresh() = open(_state.value.path)
-
-    fun up() {
-        val p = _state.value.path
-        if (p != "/") open(Paths.parent(p))
     }
 
     fun onEntryClicked(entry: EfsEntry) {
