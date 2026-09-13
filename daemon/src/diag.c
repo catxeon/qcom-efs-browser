@@ -12,6 +12,7 @@
 #include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -67,6 +68,137 @@ void diag_set_qrtr(uint32_t node, uint32_t port)
     g_qrtr_pinned = 1;
 }
 
+/* ---- the bus scan, for the verbose log --------------------------------- */
+
+/* A QRTR service id is the QMI service id, so the well-known ones have
+ * names.  Only the ones that are certain are listed; the rest print as
+ * bare numbers rather than as a guess. */
+static const struct { uint32_t id; const char *name; } k_services[] = {
+    {  1, "WDS" },   {  2, "DMS" },   {  3, "NAS" },   {  4, "QOS" },
+    {  5, "WMS" },   {  9, "VOICE" }, { 11, "UIM" },   { 12, "PBM" },
+    { 14, "RMTFS" }, { 16, "LOC" },   { 17, "SAR" },   { 26, "WDA" },
+    { 36, "PDC" },   { 42, "DSD" },   { 43, "SSCTL" },
+    { 64, "SERVREG_LOC" }, { 66, "SERVREG_NOTIF" }, { 69, "WLFW" },
+    { 4096, "TFTP" }, { QRTR_DIAG_SERVICE, "DIAG" },
+};
+
+static const char *service_name(uint32_t id)
+{
+    for (size_t i = 0; i < sizeof k_services / sizeof k_services[0]; i++)
+        if (k_services[i].id == id) return k_services[i].name;
+    return NULL;
+}
+
+struct qrtr_svc { uint32_t node, service, instance, port; };
+
+static int cmp_svc(const void *a, const void *b)
+{
+    const struct qrtr_svc *x = a, *y = b;
+    if (x->node != y->node) return x->node < y->node ? -1 : 1;
+    if (x->service != y->service) return x->service < y->service ? -1 : 1;
+    if (x->instance != y->instance) return x->instance < y->instance ? -1 : 1;
+    return 0;
+}
+
+#define SCAN_MAX 512
+
+/* Lists everything on the QRTR bus into the log, one line per node, and ends
+ * with a verdict on DIAG.  When a custom kernel or firmware leaves the helper
+ * with nothing to talk to, this is what shows it -- "the modem is up but does
+ * not publish DIAG" and "no remote processor is on the bus at all" read very
+ * differently from a bug in the app.
+ *
+ * It uses a socket of its own: a lookup subscribes the socket to every later
+ * announcement, and those must never land in the DIAG receive path. */
+static void qrtr_scan_bus(void)
+{
+    int sock = socket(AF_QIPCRTR, SOCK_DGRAM, 0);
+    if (sock < 0) return;              /* open_qrtr reports this itself */
+
+    struct sockaddr_qrtr me;
+    socklen_t l = sizeof me;
+    memset(&me, 0, sizeof me);
+    if (getsockname(sock, (struct sockaddr *)&me, &l) < 0) { close(sock); return; }
+
+    /* Service 0 is the wildcard: the name service answers with every server
+     * it knows, then an all-zero entry to mark the end. */
+    struct qrtr_ctrl_pkt pkt;
+    memset(&pkt, 0, sizeof pkt);
+    pkt.cmd = QRTR_TYPE_NEW_LOOKUP;
+    struct sockaddr_qrtr ctrl = { AF_QIPCRTR, me.sq_node, QRTR_PORT_CTRL };
+    if (sendto(sock, &pkt, sizeof pkt, 0, (struct sockaddr *)&ctrl, sizeof ctrl) < 0) {
+        qlog("QRTR bus scan: the lookup could not be sent: %s", strerror(errno));
+        close(sock);
+        return;
+    }
+
+    static struct qrtr_svc svc[SCAN_MAX];
+    size_t n = 0, dropped = 0;
+    for (;;) {
+        struct pollfd p = { sock, POLLIN, 0 };
+        if (poll(&p, 1, 1500) <= 0) break;
+        struct qrtr_ctrl_pkt in;
+        ssize_t r = recv(sock, &in, sizeof in, 0);
+        if (r < (ssize_t)sizeof in || in.cmd != QRTR_TYPE_NEW_SERVER) continue;
+        if (!in.service && !in.instance && !in.node && !in.port) break;   /* end */
+        if (n < SCAN_MAX) svc[n++] = (struct qrtr_svc){ in.node, in.service, in.instance, in.port };
+        else dropped++;
+    }
+    close(sock);
+
+    if (n == 0) {
+        qlog("QRTR bus scan: the bus is empty -- no processor has registered a "
+             "single service, so there is nothing for the helper to reach");
+        return;
+    }
+    qsort(svc, n, sizeof svc[0], cmp_svc);
+
+    size_t nodes = 0;
+    qlog("QRTR bus scan (this CPU is node %u):", me.sq_node);
+    for (size_t i = 0; i < n; ) {
+        uint32_t node = svc[i].node;
+        size_t j = i, count = 0;
+        char line[1024];
+        int len = 0;
+        while (j < n && svc[j].node == node) {
+            /* One entry per service id, with a count when it is published
+             * more than once (per SIM, per instance). */
+            size_t k = j;
+            while (k < n && svc[k].node == node && svc[k].service == svc[j].service) k++;
+            const char *name = service_name(svc[j].service);
+            if (len < (int)sizeof line - 48) {
+                len += snprintf(line + len, sizeof line - len, "%s%u%s%s", count ? ", " : "",
+                                svc[j].service, name ? " " : "", name ? name : "");
+                if (k - j > 1) len += snprintf(line + len, sizeof line - len, " x%zu", k - j);
+            }
+            count++;
+            j = k;
+        }
+        qlog("  node %u%s: %zu service%s - %s", node, node == me.sq_node ? " (this CPU)" : "",
+             count, count == 1 ? "" : "s", line);
+        nodes++;
+        i = j;
+    }
+    if (dropped) qlog("  ... and %zu more not shown", dropped);
+
+    /* The verdict.  The modem is whichever other node publishes DIAG. */
+    int remote = 0, local = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (svc[i].service != QRTR_DIAG_SERVICE) continue;
+        if (svc[i].node == me.sq_node) local++; else remote++;
+    }
+    if (remote)
+        qlog("QRTR bus scan: %zu services on %zu nodes; DIAG (%u) is published by another "
+             "node, so the helper has a modem to talk to", n, nodes, QRTR_DIAG_SERVICE);
+    else if (local)
+        qlog("QRTR bus scan: %zu services on %zu nodes; DIAG (%u) is only published by this "
+             "CPU, not by the modem -- nothing for the helper to talk to", n, nodes, QRTR_DIAG_SERVICE);
+    else
+        qlog("QRTR bus scan: %zu services on %zu nodes, but no DIAG (%u) anywhere -- this "
+             "firmware/kernel does not expose the modem's DIAG over QRTR, so there is nothing "
+             "for the helper to talk to", n, nodes, QRTR_DIAG_SERVICE);
+}
+
 /* Enumerates the QRTR bus and picks the DIAG service that lives on a node
  * other than ours -- that is the modem.  Instance 1 is the command endpoint
  * of the modem on every target seen so far; anything else is a fallback. */
@@ -120,8 +252,20 @@ static int open_qrtr(diag_t *d)
 {
     int sock = socket(AF_QIPCRTR, SOCK_DGRAM, 0);
     if (sock < 0) {
-        seterr(d, "socket(AF_QIPCRTR) failed: %s", strerror(errno));
+        int e = errno;
+        if (e == EAFNOSUPPORT)
+            seterr(d, "this kernel has no QRTR support (socket(AF_QIPCRTR): %s), "
+                      "so there is no bus to reach the modem through", strerror(e));
+        else
+            seterr(d, "socket(AF_QIPCRTR) failed: %s", strerror(e));
         return -1;
+    }
+
+    /* Once per run: every reconnect after a modem restart would repeat it. */
+    static int scanned;
+    if (g_verbose && !scanned) {
+        scanned = 1;
+        qrtr_scan_bus();
     }
 
     struct sockaddr_qrtr me;
