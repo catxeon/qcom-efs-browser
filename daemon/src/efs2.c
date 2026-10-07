@@ -607,11 +607,16 @@ int efs_is_item_path(const char *path)
  * properly returns as soon as it says "done".  Measured on the SM8350: a file
  * written, SYNC_NO_WAIT acknowledged, and the modem restarted with *no* wait
  * at all still comes back with the new contents -- so the commit is already
- * ordered ahead of what follows and a long ceiling buys nothing. */
-#define SYNC_POLL_TRIES 10
+ * ordered ahead of what follows and a long ceiling buys nothing.  It is kept
+ * short for that reason: every delete, mkdir, chmod and save commits, and a
+ * ceiling that is always spent is a pause on every single one of them. */
+#define SYNC_POLL_TRIES 3
 
-/* How many times the commit start is retried past a "still settling" refusal. */
-#define SYNC_START_TRIES 6
+/* How many times the commit start is retried past a "still settling" refusal.
+ * Generous on purpose: this costs nothing unless the modem actually refuses,
+ * and the shorter poll above means the next commit starts sooner, with the
+ * previous one more likely to be settling still. */
+#define SYNC_START_TRIES 10
 
 /*
  * Commits the EFS journal, which is what makes a write outlive a modem

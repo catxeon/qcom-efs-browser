@@ -74,7 +74,15 @@ object RootDaemon {
                 append("setsid '${binary.absolutePath}' -uid $uid")
                 if (verbose) append(" -verbose")
                 appendLine(" </dev/null >>'$logPath' 2>&1 &")
-                appendLine("sleep 1")
+                // The helper prints "ready" once its socket is listening, so
+                // waiting for that line costs what the start really takes
+                // (tens of milliseconds) instead of a flat second.  The bound
+                // is a safety net: a helper that never gets there is the
+                // connect attempt's problem to report, not this loop's.
+                appendLine(
+                    "n=0; while [ \$n -lt 40 ]; do grep -q ' ready' '$logPath' 2>/dev/null " +
+                        "&& break; n=\$((n+1)); sleep 0.05; done"
+                )
                 appendLine("chmod 644 '$logPath' 2>/dev/null")
                 appendLine("echo __DONE__")
                 appendLine("exit")

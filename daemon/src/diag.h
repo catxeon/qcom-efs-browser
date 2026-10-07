@@ -55,6 +55,12 @@ void diag_set_qrtr(uint32_t node, uint32_t port);
 int  diag_open(diag_t *d);
 void diag_close(diag_t *d);
 
+/* Watches the DIAG service come and go on the bus, for a caller restarting
+ * the modem.  Open the watch before sending the restart; see diag.c. */
+int  diag_watch_open(void);
+int  diag_watch_cycle(int fd, int gone_ms, int back_ms);
+void diag_watch_close(int fd);
+
 /* One raw DIAG payload out. */
 int  diag_send(diag_t *d, const uint8_t *req, size_t len);
 

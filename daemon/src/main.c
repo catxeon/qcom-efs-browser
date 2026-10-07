@@ -40,8 +40,16 @@
 
 /* How long the modem is given to come back before the session is rebuilt.
  * Measured recovery on an SM8350 is ~2s; 8 leaves room for slower targets. */
-#define SSR_SETTLE_MS       8000
+/* Waiting for the modem to come back.  The bus says when DIAG goes away and
+ * when it returns, so the wait is normally as long as the restart really
+ * takes (~2s on an SM8350); the fixed settle is only the fallback for a bus
+ * that never reported the service leaving. */
+#define SSR_GONE_MS         3000   /* for DIAG to leave the bus      */
+#define SSR_BACK_MS        20000   /* then for it to come back       */
+#define SSR_READY_MS         300   /* grace once it is back          */
+#define SSR_SETTLE_MS       8000   /* fallback: no news from the bus */
 #define SSR_SETTLE_MOCK_MS   200
+#define SSR_OPEN_TRIES         3   /* session attempts once it is back */
 
 static diag_t g_diag;
 static efs_t  g_efs;
@@ -738,7 +746,12 @@ static void cmd_ssr(sbuf *o)
     static const uint8_t req[4] = { DIAG_SUBSYS_CMD_F, 0x25, 0x03, 0x00 };
     int was_mock = (g_diag.transport == DIAG_TP_MOCK);
 
+    /* Opened before the request goes out, or the announcements it is waiting
+     * for would already have passed. */
+    int watch = was_mock ? -1 : diag_watch_open();
+
     if (diag_send(&g_diag, req, sizeof req) < 0) {
+        diag_watch_close(watch);
         fail(o, "%s", diag_error(&g_diag));
         return;
     }
@@ -746,15 +759,41 @@ static void cmd_ssr(sbuf *o)
 
     /* The modem takes the DIAG endpoint down with it, so the session we hold
      * dies with it -- keeping it would leave the caller talking to a corpse.
-     * Drop it, give the modem time to come back, then build a fresh one so the
-     * caller can carry on without reconnecting by hand.  The mock has no modem
-     * to wait for, so tests do not pay the settle time. */
+     * Drop it, wait for the modem to come back, then build a fresh one so the
+     * caller can carry on without reconnecting by hand.
+     *
+     * The bus knows when that is: DIAG is unregistered as the modem goes down
+     * and registered again when it is up, so waiting for those two beats both
+     * a guessed sleep that is usually too long and one that is occasionally
+     * too short.  Falling back to the fixed settle keeps the old behaviour
+     * wherever the bus stays quiet (and the mock, which has no bus at all). */
     diag_close(&g_diag);
     g_open = 0;
-    usleep((was_mock ? SSR_SETTLE_MOCK_MS : SSR_SETTLE_MS) * 1000);
 
+    if (watch >= 0) {
+        int r = diag_watch_cycle(watch, SSR_GONE_MS, SSR_BACK_MS);
+        diag_watch_close(watch);
+        if (r == 0) {
+            usleep(SSR_READY_MS * 1000);     /* registered a moment before it answers */
+        } else if (r > 0) {
+            qlog("modem restart: the bus never reported DIAG leaving; waiting it out instead");
+            usleep((SSR_SETTLE_MS - SSR_GONE_MS) * 1000);
+        } else {
+            qlog("modem restart: DIAG left the bus and did not come back in %d ms", SSR_BACK_MS);
+        }
+    } else {
+        usleep((was_mock ? SSR_SETTLE_MOCK_MS : SSR_SETTLE_MS) * 1000);
+    }
+
+    /* A modem that has only just registered can still refuse the first
+     * handshake, so the session is given a few tries rather than one. */
     char err[256];
-    if (session_open(err, sizeof err) < 0) {
+    int opened = 0;
+    for (int i = 0; i < SSR_OPEN_TRIES; i++) {
+        if (session_open(err, sizeof err) == 0) { opened = 1; break; }
+        if (i + 1 < SSR_OPEN_TRIES) usleep(500 * 1000);
+    }
+    if (!opened) {
         qlog("modem restart: the session did not come back: %s", err);
         sb_str(o, "{\"ok\":true,\"reconnected\":false,\"error\":");
         sb_json_str(o, err);

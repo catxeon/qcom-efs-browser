@@ -31,6 +31,8 @@ static void seterr(diag_t *d, const char *fmt, ...)
 
 static char g_mock[512];
 
+static int64_t now_ms(void);
+
 void diag_set_mock(const char *path) { snprintf(g_mock, sizeof g_mock, "%s", path); }
 
 const char *diag_transport_desc(const diag_t *d) { return d->desc[0] ? d->desc : "qrtr"; }
@@ -42,6 +44,7 @@ const char *diag_transport_desc(const diag_t *d) { return d->desc[0] ? d->desc :
 #endif
 #define QRTR_PORT_CTRL        0xfffffffeu
 #define QRTR_TYPE_NEW_SERVER  4
+#define QRTR_TYPE_DEL_SERVER  5
 #define QRTR_TYPE_NEW_LOOKUP  10
 
 struct sockaddr_qrtr {
@@ -67,6 +70,93 @@ void diag_set_qrtr(uint32_t node, uint32_t port)
     g_qrtr_port = port;
     g_qrtr_pinned = 1;
 }
+
+/* ---- watching the modem come and go ------------------------------------ */
+
+static uint32_t g_watch_me;
+
+/* Subscribes a socket of its own to DIAG service announcements, so a caller
+ * about to restart the modem can be told when it actually went away and when
+ * it is back, instead of sleeping for a guessed length of time.  Must be
+ * opened BEFORE the restart request goes out, or the announcements are missed.
+ * Returns the socket, or -1 when there is no bus to watch (the mock, a kernel
+ * without QRTR) and the caller should fall back to waiting. */
+int diag_watch_open(void)
+{
+    if (g_mock[0]) return -1;
+
+    int sock = socket(AF_QIPCRTR, SOCK_DGRAM, 0);
+    if (sock < 0) return -1;
+
+    struct sockaddr_qrtr me;
+    socklen_t l = sizeof me;
+    memset(&me, 0, sizeof me);
+    if (getsockname(sock, (struct sockaddr *)&me, &l) < 0) { close(sock); return -1; }
+    g_watch_me = me.sq_node;
+
+    struct qrtr_ctrl_pkt pkt;
+    memset(&pkt, 0, sizeof pkt);
+    pkt.cmd = QRTR_TYPE_NEW_LOOKUP;
+    pkt.service = QRTR_DIAG_SERVICE;
+    struct sockaddr_qrtr ctrl = { AF_QIPCRTR, me.sq_node, QRTR_PORT_CTRL };
+    if (sendto(sock, &pkt, sizeof pkt, 0, (struct sockaddr *)&ctrl, sizeof ctrl) < 0) {
+        close(sock);
+        return -1;
+    }
+
+    /* The lookup first replays what is on the bus right now, ending with an
+     * all-zero entry.  Drain that, so what arrives later is only live news.
+     * Leftovers would be harmless anyway: a NEW_SERVER is only acted on after
+     * a DEL_SERVER has been seen. */
+    for (;;) {
+        struct pollfd p = { sock, POLLIN, 0 };
+        if (poll(&p, 1, 1000) <= 0) break;
+        struct qrtr_ctrl_pkt in;
+        if (recv(sock, &in, sizeof in, 0) < (ssize_t)sizeof in) continue;
+        if (in.cmd != QRTR_TYPE_NEW_SERVER) continue;
+        if (!in.service && !in.instance && !in.node && !in.port) break;
+    }
+    return sock;
+}
+
+/* Waits for the modem's DIAG service to disappear and then come back.
+ * Returns 0 once it is back, 1 when nothing ever disappeared (so the caller
+ * cannot tell a restart happened and should fall back to waiting), and -1
+ * when it went away and did not return in time. */
+int diag_watch_cycle(int fd, int gone_ms, int back_ms)
+{
+    int gone = 0;
+    int64_t deadline = now_ms() + gone_ms;
+
+    for (;;) {
+        int left = (int)(deadline - now_ms());
+        if (left <= 0) return gone ? -1 : 1;
+
+        struct pollfd p = { fd, POLLIN, 0 };
+        int pr = poll(&p, 1, left);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            return gone ? -1 : 1;
+        }
+        if (pr == 0) continue;            /* deadline is re-checked at the top */
+
+        struct qrtr_ctrl_pkt in;
+        if (recv(fd, &in, sizeof in, 0) < (ssize_t)sizeof in) continue;
+        if (in.service != QRTR_DIAG_SERVICE) continue;
+        if (in.node == g_watch_me) continue;     /* our own side, not the modem */
+
+        if (in.cmd == QRTR_TYPE_DEL_SERVER && !gone) {
+            gone = 1;
+            qlog("modem restart: DIAG left the bus (node %u)", in.node);
+            deadline = now_ms() + back_ms;
+        } else if (in.cmd == QRTR_TYPE_NEW_SERVER && gone) {
+            qlog("modem restart: DIAG is back on the bus (node %u port %u)", in.node, in.port);
+            return 0;
+        }
+    }
+}
+
+void diag_watch_close(int fd) { if (fd >= 0) close(fd); }
 
 /* ---- the bus scan, for the verbose log --------------------------------- */
 
