@@ -12,9 +12,9 @@ android {
         applicationId = "dev.qcom.efs"
         minSdk = 26
         targetSdk = 35
-        versionCode = 12
+        versionCode = 13
         // Also update QEFSD_VERSION in daemon/src/main.c; CI checks that they match.
-        versionName = "1.4.4"
+        versionName = "1.4.5"
     }
 
     buildTypes {
