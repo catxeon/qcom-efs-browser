@@ -66,12 +66,21 @@ data class EfsStat(
     }
 }
 
+/**
+ * Only used until the helper has answered: it reports its own limit, so the
+ * number lives in the helper and this is the stand-in for the moment before
+ * the first reply.
+ */
+const val DEFAULT_MAX_INLINE = 512 * 1024
+
 data class DaemonInfo(
     val version: String,
     val subsys: Int,
     /** How the helper reached the modem, e.g. "qrtr 0:25". */
     val transport: String,
     val readOnly: Boolean,
+    /** Biggest file the helper will hand over inline, as the helper reports it. */
+    val maxInline: Int = DEFAULT_MAX_INLINE,
 )
 
 data class NvResult(val item: Int, val status: Int, val statusText: String, val hex: String)

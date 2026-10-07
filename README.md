@@ -194,9 +194,10 @@ python3 daemon/tools/efsctl.py cat /policyman/policies.xml
 ```
 
 `-uid 2000` because adbd (the shell) is what connects through `adb forward`.
-Alongside it are `tools/qrtr_probe.c` (the services on the QRTR bus) and
-`tools/qrtr_diag_probe.c` (a sweep of DIAG-exchange formats), which is how the
-transport was found on SM8350.
+With `-verbose` the helper also lists every service on the QRTR bus as it
+connects, which is the quickest way to see whether the modem publishes DIAG
+at all.  Alongside it is `tools/qrtr_diag_probe.c` (a sweep of DIAG-exchange
+formats), which is how the transport was found on SM8350.
 
 ---
 
@@ -371,7 +372,6 @@ daemon/
   src/main.c            the unix socket, the JSON protocol, recursive operations
   test/mock_modem.py    a fake modem: EFS2 + NV in QRTR frames over a socket
   test/run_tests.py     the end-to-end test of the daemon against the mock
-  tools/qrtr_probe.c    the services on the QRTR bus
   tools/qrtr_diag_probe.c  a sweep of DIAG-over-QRTR exchange formats
   tools/efsctl.py       a client to the daemon over adb forward, without the app
   tools/write_test.py           a reversible write check on a live modem

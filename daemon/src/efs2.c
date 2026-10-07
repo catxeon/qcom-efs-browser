@@ -800,6 +800,14 @@ int efs_write_file(efs_t *e, const char *path, const uint8_t *data, size_t len,
 
 /* ---- modem-generated tar image ---------------------------------------- */
 
+static void image_close(efs_t *e, int32_t handle)
+{
+    uint8_t cl[8], resp[128];
+    hdr(e, cl, EFS2_FS_IMAGE_CLOSE);
+    put_le32(cl + 4, (uint32_t)handle);
+    diag_xfer(e->d, cl, sizeof cl, resp, sizeof resp, e->timeout_ms);
+}
+
 int efs_image_dump(efs_t *e, const char *efs_path, const char *local_path,
                    uint64_t *bytes_out)
 {
@@ -860,22 +868,12 @@ int efs_image_dump(efs_t *e, const char *efs_path, const char *local_path,
     }
     close(out);
 
-    {
-        uint8_t cl[8];
-        hdr(e, cl, EFS2_FS_IMAGE_CLOSE);
-        put_le32(cl + 4, (uint32_t)handle);
-        diag_xfer(e->d, cl, sizeof cl, resp, sizeof resp, e->timeout_ms);
-    }
+    image_close(e, handle);
     if (bytes_out) *bytes_out = total;
     return 0;
 
 close_handle:
-    {
-        uint8_t cl[8];
-        hdr(e, cl, EFS2_FS_IMAGE_CLOSE);
-        put_le32(cl + 4, (uint32_t)handle);
-        diag_xfer(e->d, cl, sizeof cl, resp, sizeof resp, e->timeout_ms);
-    }
+    image_close(e, handle);
     return -1;
 }
 

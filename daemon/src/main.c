@@ -395,9 +395,10 @@ static void cmd_open(sbuf *o)
     char err[256];
     if (session_open(err, sizeof err) < 0) { fail(o, "%s", err); return; }
 
-    sb_fmt(o, "{\"ok\":true,\"transport\":\"%s\",\"subsys\":%d,\"readonly\":%s}",
+    sb_fmt(o, "{\"ok\":true,\"transport\":\"%s\",\"subsys\":%d,\"readonly\":%s,"
+              "\"max_inline\":%u}",
            diag_transport_desc(&g_diag), g_efs.method,
-           g_readonly ? "true" : "false");
+           g_readonly ? "true" : "false", MAX_INLINE_READ);
 }
 
 static void cmd_read(const char *req, sbuf *o)

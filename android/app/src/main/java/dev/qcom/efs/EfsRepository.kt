@@ -40,6 +40,7 @@ class EfsRepository(private val ctx: Context) {
             subsys = open.optInt("subsys"),
             transport = open.optString("transport"),
             readOnly = open.optBoolean("readonly", true),
+            maxInline = open.optInt("max_inline", DEFAULT_MAX_INLINE),
         )
         return info to (report.lines + RootDaemon.readDaemonLog(ctx))
     }
@@ -63,11 +64,10 @@ class EfsRepository(private val ctx: Context) {
 
     // ---- browsing ------------------------------------------------------
 
+    /** Order is the browser's business: it sorts by the key the user picked. */
     suspend fun list(path: String): List<EfsEntry> {
         val arr = client.cmd("ls") { put("path", path) }.optJSONArray("entries") ?: return emptyList()
-        return (0 until arr.length())
-            .map { EfsEntry.from(arr.getJSONObject(it)) }
-            .sortedWith(compareByDescending<EfsEntry> { it.isDir }.thenBy { it.name.lowercase() })
+        return (0 until arr.length()).map { EfsEntry.from(arr.getJSONObject(it)) }
     }
 
     suspend fun stat(path: String): EfsStat = EfsStat.from(client.cmd("stat") { put("path", path) })
