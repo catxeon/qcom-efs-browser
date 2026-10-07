@@ -613,10 +613,12 @@ int efs_is_item_path(const char *path)
 #define SYNC_POLL_TRIES 3
 
 /* How many times the commit start is retried past a "still settling" refusal.
- * Generous on purpose: this costs nothing unless the modem actually refuses,
- * and the shorter poll above means the next commit starts sooner, with the
- * previous one more likely to be settling still. */
-#define SYNC_START_TRIES 10
+ * Measured on the SM8350: with something to commit the modem never refuses,
+ * even with no pause at all between one commit and the next -- the refusal
+ * belongs to commits with nothing to write, and those are now skipped before
+ * they reach the modem.  So this stays short: a refusal that does happen is
+ * worth reporting promptly rather than sitting on. */
+#define SYNC_START_TRIES 6
 
 /*
  * Commits the EFS journal, which is what makes a write outlive a modem

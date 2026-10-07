@@ -58,7 +58,7 @@ void diag_close(diag_t *d);
 /* Watches the DIAG service come and go on the bus, for a caller restarting
  * the modem.  Open the watch before sending the restart; see diag.c. */
 int  diag_watch_open(void);
-int  diag_watch_cycle(int fd, int gone_ms, int back_ms);
+int  diag_watch_cycle(int fd, int quiet_ms, int back_ms);
 void diag_watch_close(int fd);
 
 /* One raw DIAG payload out. */

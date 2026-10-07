@@ -44,10 +44,9 @@
  * when it returns, so the wait is normally as long as the restart really
  * takes (~2s on an SM8350); the fixed settle is only the fallback for a bus
  * that never reported the service leaving. */
-#define SSR_GONE_MS         3000   /* for DIAG to leave the bus      */
-#define SSR_BACK_MS        20000   /* then for it to come back       */
-#define SSR_READY_MS         300   /* grace once it is back          */
-#define SSR_SETTLE_MS       8000   /* fallback: no news from the bus */
+#define SSR_SETTLE_MS       8000   /* how long a silent bus is given */
+#define SSR_BACK_MS        20000   /* once the modem is known to be down */
+#define SSR_READY_MS         300   /* grace once DIAG is back        */
 #define SSR_SETTLE_MOCK_MS   200
 #define SSR_OPEN_TRIES         3   /* session attempts once it is back */
 
@@ -771,13 +770,13 @@ static void cmd_ssr(sbuf *o)
     g_open = 0;
 
     if (watch >= 0) {
-        int r = diag_watch_cycle(watch, SSR_GONE_MS, SSR_BACK_MS);
+        int r = diag_watch_cycle(watch, SSR_SETTLE_MS, SSR_BACK_MS);
         diag_watch_close(watch);
         if (r == 0) {
             usleep(SSR_READY_MS * 1000);     /* registered a moment before it answers */
         } else if (r > 0) {
-            qlog("modem restart: the bus never reported DIAG leaving; waiting it out instead");
-            usleep((SSR_SETTLE_MS - SSR_GONE_MS) * 1000);
+            qlog("modem restart: the bus said nothing about DIAG in %d ms; trying the "
+                 "modem anyway", SSR_SETTLE_MS);
         } else {
             qlog("modem restart: DIAG left the bus and did not come back in %d ms", SSR_BACK_MS);
         }
@@ -892,6 +891,17 @@ static void dispatch(const char *req, sbuf *o)
      * have left the EFS journal uncommitted, which is what a later restart has
      * to flush; "sync" clears the mark again on its way out. */
     if (require_write(o) < 0) return;
+
+    /* A commit that has nothing to commit is not merely wasted: the modem
+     * refuses to start one while the last is still settling (efs errno 306,
+     * for several seconds), so asking twice in a row reports a failure for a
+     * journal that is already on flash.  Nothing has been written since the
+     * last successful commit, so say so and leave the modem alone. */
+    if (!strcmp(cmd, "sync") && !g_journal_dirty) {
+        sb_str(o, "{\"ok\":true,\"skipped\":true}");
+        return;
+    }
+
     g_journal_dirty = 1;
 
     if (!strcmp(cmd, "raw"))      { cmd_raw(req, o); return; }

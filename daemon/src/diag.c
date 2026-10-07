@@ -119,14 +119,23 @@ int diag_watch_open(void)
     return sock;
 }
 
-/* Waits for the modem's DIAG service to disappear and then come back.
- * Returns 0 once it is back, 1 when nothing ever disappeared (so the caller
- * cannot tell a restart happened and should fall back to waiting), and -1
- * when it went away and did not return in time. */
-int diag_watch_cycle(int fd, int gone_ms, int back_ms)
+/* Waits for the modem's DIAG service to register again, which is what says
+ * the modem is back.  Its removal is only logged, never required: measured on
+ * an SM8350, some restarts announce it and some do not, so waiting for the
+ * removal first would miss the re-registration that follows a quiet one.
+ *
+ * Returns 0 once DIAG is back, 1 when the bus said nothing at all within
+ * quiet_ms (the caller has then already waited that long and should just try
+ * the modem), and -1 when the removal was announced but nothing came back
+ * within back_ms of it.
+ *
+ * Anything the lookup replayed when the watch was opened has been drained
+ * down to its end marker, so a registration seen here is a genuinely new one
+ * and cannot be the service that was there before the restart. */
+int diag_watch_cycle(int fd, int quiet_ms, int back_ms)
 {
     int gone = 0;
-    int64_t deadline = now_ms() + gone_ms;
+    int64_t deadline = now_ms() + quiet_ms;
 
     for (;;) {
         int left = (int)(deadline - now_ms());
@@ -148,8 +157,11 @@ int diag_watch_cycle(int fd, int gone_ms, int back_ms)
         if (in.cmd == QRTR_TYPE_DEL_SERVER && !gone) {
             gone = 1;
             qlog("modem restart: DIAG left the bus (node %u)", in.node);
-            deadline = now_ms() + back_ms;
-        } else if (in.cmd == QRTR_TYPE_NEW_SERVER && gone) {
+            /* Now that the modem is known to be down, allow it the longer
+             * budget to come back rather than only the quiet window. */
+            int64_t back = now_ms() + back_ms;
+            if (back > deadline) deadline = back;
+        } else if (in.cmd == QRTR_TYPE_NEW_SERVER) {
             qlog("modem restart: DIAG is back on the bus (node %u port %u)", in.node, in.port);
             return 0;
         }
