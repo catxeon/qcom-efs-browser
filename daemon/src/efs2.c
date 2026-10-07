@@ -686,6 +686,17 @@ int efs_sync(efs_t *e)
 
 int efs_read_file(efs_t *e, const char *path, uint8_t **out, size_t *len)
 {
+    return efs_read_file_sized(e, path, out, len, -1);
+}
+
+/* size_hint spares the stat: a caller that has just listed the directory
+ * already knows how big the file is, and on a tree walk that stat is one
+ * round trip in four.  Pass -1 when the size is not known.  A known size of
+ * zero also spares the read -- marker files under /nv/item_files are empty on
+ * purpose and there is nothing to ask for. */
+int efs_read_file_sized(efs_t *e, const char *path, uint8_t **out, size_t *len,
+                        int32_t size_hint)
+{
     efs_stat_t st;
     *out = NULL;
     *len = 0;
@@ -708,7 +719,14 @@ int efs_read_file(efs_t *e, const char *path, uint8_t **out, size_t *len)
     }
 
     size_t size = 0;
-    if (efs_stat(e, path, &st) == 0 && st.size > 0) size = (size_t)st.size;
+    int known = 0;
+    if (size_hint >= 0) {
+        size = (size_t)size_hint;
+        known = 1;
+    } else if (efs_stat(e, path, &st) == 0 && st.size > 0) {
+        size = (size_t)st.size;
+        known = 1;
+    }
 
     size_t cap = size ? size : 4096;
     uint8_t *buf = malloc(cap ? cap : 1);
@@ -716,7 +734,7 @@ int efs_read_file(efs_t *e, const char *path, uint8_t **out, size_t *len)
 
     size_t off = 0;
     for (;;) {
-        if (size && off >= size) break;
+        if (known && off >= size) break;
         if (off + EFS_MAX_IO > cap) {
             size_t ncap = cap * 2 + EFS_MAX_IO;
             uint8_t *nb = realloc(buf, ncap);
@@ -725,13 +743,13 @@ int efs_read_file(efs_t *e, const char *path, uint8_t **out, size_t *len)
             cap = ncap;
         }
         uint32_t want = EFS_MAX_IO;
-        if (size && size - off < want) want = (uint32_t)(size - off);
+        if (known && size - off < want) want = (uint32_t)(size - off);
 
         int got = efs_read(e, fd, want, (uint32_t)off, buf + off, cap - off);
         if (got < 0) { free(buf); efs_close_fd(e, fd); return -1; }
         if (got == 0) break;
         off += (size_t)got;
-        if (!size && (uint32_t)got < want) break;   /* unknown size: short read = EOF */
+        if (!known && (uint32_t)got < want) break;  /* unknown size: short read = EOF */
     }
 
     efs_close_fd(e, fd);

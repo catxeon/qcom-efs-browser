@@ -281,7 +281,9 @@ static void pull_tree(const char *efs_path, const char *local_dir,
             }
             uint8_t *data = NULL;
             size_t len = 0;
-            if (efs_read_file(&g_efs, child, &data, &len) == 0) {
+            /* The listing just gave the size, so the read does not have to
+             * ask for it again -- one round trip in four, per file. */
+            if (efs_read_file_sized(&g_efs, child, &data, &len, ents[i].size) == 0) {
                 if (write_local(local, data, len) == 0) {
                     ps->files++;
                     ps->bytes += len;
