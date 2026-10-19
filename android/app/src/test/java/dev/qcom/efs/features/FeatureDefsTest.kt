@@ -10,8 +10,8 @@ class FeatureDefsTest {
     private fun disabledBytes(vararg ints: Int) = ints.toList()
 
     @Test
-    fun `table has 12 features with unique ids`() {
-        assertEquals(12, ALL_FEATURES.size)
+    fun `table has 13 features with unique ids`() {
+        assertEquals(13, ALL_FEATURES.size)
         assertEquals(ALL_FEATURES.size, ALL_FEATURES.map { it.id }.distinct().size)
         assertTrue(ALL_FEATURES.all { it.reads.isNotEmpty() && it.writes.isNotEmpty() })
     }
@@ -89,6 +89,25 @@ class FeatureDefsTest {
         assertEquals(disabledBytes(0, 0), f.writes.single().bytes)
         assertTrue(f.isDisabled(listOf(listOf(0, 0))))
         assertFalse(f.isDisabled(listOf(listOf(0, 1))))
+    }
+
+    @Test
+    fun `tdd_ul_mimo shares path with ul_mimo and uses the TDD band pattern`() {
+        val ul = ALL_FEATURES.first { it.id == "ul_mimo" }
+        val f = ALL_FEATURES.first { it.id == "tdd_ul_mimo" }
+        assertEquals(ul.reads, f.reads)
+        val bandBytes =
+            listOf(
+                38, 0, 1, 0, 40, 0, 1, 0, 41, 0, 1, 0, 48, 0, 1, 0,
+                77, 0, 1, 0, 78, 0, 1, 0, 79, 0, 1, 0, 104, 0, 1, 0,
+            )
+        assertEquals(listOf(0, 0, 0, 8) + bandBytes, f.writes.single().bytes)
+        val disabled = listOf(0, 0, 0, 8) + bandBytes
+        assertTrue(f.isDisabled(listOf(disabled)))
+        assertTrue(f.isDisabled(listOf(disabled + List(20) { 0 })))
+        assertFalse(f.isDisabled(listOf(disabled.dropLast(1))))
+        assertFalse(f.isDisabled(listOf(listOf(1, 1, 0))))
+        assertFalse(f.isDisabled(listOf(listOf(0, 0, 0, 8) + bandBytes.dropLast(1) + listOf(9))))
     }
 
     @Test

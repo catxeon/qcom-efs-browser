@@ -43,7 +43,8 @@ fun slotPath(path: String, slot: Int): String {
 private val NR_BASE = "/nv/item_files/modem/nr5g/RRC/"
 
 /**
- * The 12 NR5G capability toggles from mtbtool's features screen. Bytes and
+ * The NR5G capability toggles from mtbtool's features screen, plus the app's
+ * own "Disable TDD-only UL MIMO". For the ported toggles the bytes and
  * disabled-detection are byte-for-byte faithful to the mtbtool source.
  * Do not "clean up" these payloads; each isDisabled must recognize exactly
  * what its writes produce.
@@ -101,6 +102,32 @@ val ALL_FEATURES: List<FeatureDef> = listOf(
         isDisabled = { byteArrays ->
             val b = byteArrays.firstOrNull() ?: return@FeatureDef true
             b.size >= 2 && b[0] == 0 && b[1] == 0
+        },
+    ),
+    FeatureDef(
+        id = "tdd_ul_mimo",
+        label = "Disable TDD-only UL MIMO",
+        reads = listOf(NR_BASE + "cap_limit_rf_mimo"),
+        writes = listOf(
+            NvWrite(
+                NR_BASE + "cap_limit_rf_mimo",
+                listOf(0, 0, 0, 8) +
+                    listOf(
+                        38, 0, 1, 0, 40, 0, 1, 0, 41, 0, 1, 0, 48, 0, 1, 0,
+                        77, 0, 1, 0, 78, 0, 1, 0, 79, 0, 1, 0, 104, 0, 1, 0,
+                    ),
+            ),
+        ),
+        isDisabled = { byteArrays ->
+            val b = byteArrays.firstOrNull() ?: return@FeatureDef true
+            val bandBytes =
+                listOf(
+                    38, 0, 1, 0, 40, 0, 1, 0, 41, 0, 1, 0, 48, 0, 1, 0,
+                    77, 0, 1, 0, 78, 0, 1, 0, 79, 0, 1, 0, 104, 0, 1, 0,
+                )
+            b.size >= 36 &&
+                b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 8 &&
+                bandBytes.indices.all { i -> b[4 + i] == bandBytes[i] }
         },
     ),
     FeatureDef(
