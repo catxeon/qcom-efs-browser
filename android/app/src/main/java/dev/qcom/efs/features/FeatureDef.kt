@@ -111,11 +111,16 @@ val ALL_FEATURES: List<FeatureDef> = listOf(
         writes = listOf(
             NvWrite(
                 NR_BASE + "cap_limit_rf_mimo",
+                // Padded to the 44-byte layout (4-byte header + 10 entries)
+                // that ul_mimo and lowband_4rx write, as mtbtool does: a modem
+                // may ignore an item file whose size does not match, and the
+                // header's count already tells it the tail is unused.
                 listOf(0, 0, 0, 8) +
                     listOf(
                         38, 0, 1, 0, 40, 0, 1, 0, 41, 0, 1, 0, 48, 0, 1, 0,
                         77, 0, 1, 0, 78, 0, 1, 0, 79, 0, 1, 0, 104, 0, 1, 0,
-                    ),
+                    ) +
+                    List(8) { 0 },
             ),
         ),
         isDisabled = { byteArrays ->

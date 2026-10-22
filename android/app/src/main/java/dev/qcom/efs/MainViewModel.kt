@@ -807,10 +807,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // A successful write is not proof the feature is off: ul_mimo,
             // tdd_ul_mimo and lowband_4rx share cap_limit_rf_mimo with
             // mutually exclusive payloads, so disabling one re-enables the
-            // others.  Re-read every
-            // feature instead of assuming.  The row keeps its Writing spinner
-            // until the fresh statuses land, which also keeps the dialog
-            // locked for the duration.
+            // others.  Re-read every feature instead of assuming.  The row
+            // keeps its Writing spinner until the fresh statuses land, which
+            // also keeps the dialog locked for the duration.
             checkFeatures(ready.simSlot)
         }
     }

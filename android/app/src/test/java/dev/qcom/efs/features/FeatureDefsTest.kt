@@ -101,7 +101,9 @@ class FeatureDefsTest {
                 38, 0, 1, 0, 40, 0, 1, 0, 41, 0, 1, 0, 48, 0, 1, 0,
                 77, 0, 1, 0, 78, 0, 1, 0, 79, 0, 1, 0, 104, 0, 1, 0,
             )
-        assertEquals(listOf(0, 0, 0, 8) + bandBytes, f.writes.single().bytes)
+        assertEquals(listOf(0, 0, 0, 8) + bandBytes + List(8) { 0 }, f.writes.single().bytes)
+        assertEquals(44, f.writes.single().bytes.size)
+        assertTrue(f.isDisabled(listOf(f.writes.single().bytes)))
         val disabled = listOf(0, 0, 0, 8) + bandBytes
         assertTrue(f.isDisabled(listOf(disabled)))
         assertTrue(f.isDisabled(listOf(disabled + List(20) { 0 })))
