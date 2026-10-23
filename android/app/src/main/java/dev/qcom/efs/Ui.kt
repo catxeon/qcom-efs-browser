@@ -64,6 +64,7 @@ fun App(vm: MainViewModel) {
     var importTarget by remember { mutableStateOf<String?>(null) }
     var importAsItem by remember { mutableStateOf<Boolean?>(null) }
     var pendingImport by remember { mutableStateOf<Uri?>(null) }
+    var ssrNeedsWrites by remember { mutableStateOf(false) }
 
     val exporter = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
@@ -210,14 +211,21 @@ fun App(vm: MainViewModel) {
                                     leadingIcon = { Icon(Icons.Filled.Sync, null) },
                                     onClick = { menu = false; vm.sync() },
                                 )
-                                // Greyed out under the read-only lock rather than
-                                // hidden: the helper would refuse it anyway, and
-                                // its own refusal reads as protocol, not English.
+                                // Always tappable: under the read-only lock the
+                                // helper refuses the SSR, so the tap offers to
+                                // lift the lock instead of silently doing
+                                // nothing.
                                 DropdownMenuItem(
                                     text = { Text("Restart modem") },
                                     leadingIcon = { Icon(Icons.Filled.RestartAlt, null) },
-                                    enabled = !state.readOnly,
-                                    onClick = { menu = false; vm.modemSsr() },
+                                    onClick = {
+                                        menu = false
+                                        if (state.readOnly) {
+                                            ssrNeedsWrites = true
+                                        } else {
+                                            vm.modemSsr()
+                                        }
+                                    },
                                 )
                                 HorizontalDivider()
                             }
@@ -397,6 +405,30 @@ fun App(vm: MainViewModel) {
                 }
             },
             onDismiss = { pendingImport = null },
+        )
+    }
+
+    if (ssrNeedsWrites) {
+        AlertDialog(
+            onDismissRequest = { ssrNeedsWrites = false },
+            icon = { Icon(Icons.Filled.Lock, null) },
+            title = { Text("Write mode is off") },
+            text = {
+                Text(
+                    "Restarting the modem changes modem state, so it needs write mode. " +
+                            "Turning writes on unlocks every other change in the app as well - " +
+                            "an EFS edit can brick the modem. Turn writes on and restart now?"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    ssrNeedsWrites = false
+                    vm.enableWritesAndModemSsr()
+                }) { Text("Enable writes and restart") }
+            },
+            dismissButton = {
+                TextButton(onClick = { ssrNeedsWrites = false }) { Text("Cancel") }
+            },
         )
     }
 
