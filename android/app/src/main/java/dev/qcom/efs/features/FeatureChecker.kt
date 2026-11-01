@@ -84,11 +84,20 @@ class FeatureChecker(private val access: FeatureItemAccess) {
         return FeatureCheck(statuses)
     }
 
-    /** Writes the disabling bytes. Returns null on success, else an error message. */
+    /**
+     * Writes the disabling bytes. Returns null on success, else an error message.
+     *
+     * A [NvWrite.merge] entry is resolved against the item's current contents
+     * first, so the read belongs to the same step as its write: a read failure
+     * is reported as a write failure for that item rather than silently
+     * falling back to the fixed payload, which could re-enable other bits.
+     */
     suspend fun disable(feature: FeatureDef, slot: Int): String? {
         for (w in feature.writes) {
+            val path = slotPath(w.path, slot)
             try {
-                access.write(slotPath(w.path, slot), w.bytes)
+                val bytes = if (w.merge == null) w.bytes else w.merge(access.read(path))
+                access.write(path, bytes)
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 return "Write failed for ${w.path.substringAfterLast('/')}"

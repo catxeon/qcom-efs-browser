@@ -4,8 +4,19 @@ package dev.qcom.efs.features
  * One write into an EFS item file. [bytes] is the exact payload as decimal
  * byte values (port of mtbtool's NvWrite, which stores them as a decimal
  * string).
+ *
+ * [merge] turns the write into a read-modify-write for items that carry a
+ * whole capability bitmap rather than a single switch: it receives what the
+ * item currently holds (null when absent) and returns the payload to store.
+ * Fixing the payload instead would re-enable every bit the item happens to
+ * clear. [bytes] stays the fallback the caller can reason about without
+ * reading, and is what a newly created item gets.
  */
-data class NvWrite(val path: String, val bytes: List<Int>)
+data class NvWrite(
+    val path: String,
+    val bytes: List<Int>,
+    val merge: ((List<Int>?) -> List<Int>)? = null,
+)
 
 /**
  * A modem capability that can be turned off by writing fixed bytes into EFS
@@ -43,11 +54,36 @@ fun slotPath(path: String, slot: Int): String {
 private val NR_BASE = "/nv/item_files/modem/nr5g/RRC/"
 
 /**
+ * cap_feature_band_nr_v2 is a bitmap of enabled NR features: an absent item
+ * means the modem defaults, which is what all-FF encodes.  NR 1024QAM for TDD
+ * sits in bits 233-240, i.e. all eight bits of byte index 29 (1-based byte 30,
+ * which is what ueCapabilityNR-r16 numbers them as).
+ */
+private val NR_FEATURE_BAND_ITEM = NR_BASE + "cap_feature_band_nr_v2"
+private const val NR_1024QAM_TDD_BYTE = 29
+private const val NR_FEATURE_BAND_LEN = 32
+
+/** Bytes 0..28 are all-FF for a new item; byte 29 is the 1024QAM TDD switch. */
+private val NR_1024QAM_TDD_DISABLED = List(NR_FEATURE_BAND_LEN) { if (it == NR_1024QAM_TDD_BYTE) 0 else 0xFF }
+
+/**
+ * Clears bits 233-240 of an existing bitmap and leaves every other bit as the
+ * modem has it.  A shorter item is padded with FF (the default: feature on)
+ * rather than refusing, since the tail it is missing is simply unset.
+ */
+private fun clearNr1024qamTdd(current: List<Int>?): List<Int> {
+    val base = current?.toMutableList() ?: mutableListOf()
+    while (base.size < NR_FEATURE_BAND_LEN) base += 0xFF
+    base[NR_1024QAM_TDD_BYTE] = 0
+    return base
+}
+
+/**
  * The NR5G capability toggles from mtbtool's features screen, plus the app's
- * own "Disable TDD-only UL MIMO". For the ported toggles the bytes and
- * disabled-detection are byte-for-byte faithful to the mtbtool source.
- * Do not "clean up" these payloads; each isDisabled must recognize exactly
- * what its writes produce.
+ * own "Disable TDD-only UL MIMO" and "Disable NR 1024QAM TDD". For the ported
+ * toggles the bytes and disabled-detection are byte-for-byte faithful to the
+ * mtbtool source.  Do not "clean up" these payloads; each isDisabled must
+ * recognize exactly what its writes produce.
  */
 val ALL_FEATURES: List<FeatureDef> = listOf(
     FeatureDef(
@@ -133,6 +169,24 @@ val ALL_FEATURES: List<FeatureDef> = listOf(
             b.size >= 36 &&
                 b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 8 &&
                 bandBytes.indices.all { i -> b[4 + i] == bandBytes[i] }
+        },
+    ),
+    FeatureDef(
+        id = "nr_1024qam_tdd",
+        label = "Disable NR 1024QAM TDD",
+        reads = listOf(NR_FEATURE_BAND_ITEM),
+        writes = listOf(
+            NvWrite(
+                NR_FEATURE_BAND_ITEM,
+                // What a freshly created item gets: the modem default of every
+                // feature on, with the 1024QAM TDD byte cleared.
+                NR_1024QAM_TDD_DISABLED,
+                merge = ::clearNr1024qamTdd,
+            ),
+        ),
+        isDisabled = { byteArrays ->
+            val b = byteArrays.firstOrNull() ?: return@FeatureDef true
+            b.size > NR_1024QAM_TDD_BYTE && b[NR_1024QAM_TDD_BYTE] == 0
         },
     ),
     FeatureDef(
