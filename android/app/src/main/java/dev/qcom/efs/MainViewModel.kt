@@ -675,7 +675,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun modemSsr() = work("restarting the modem") {
+    fun modemSsr() = work("restarting the modem") { restartModem() }
+
+    /**
+     * The menu's restart with the lock still on: the helper refuses an SSR in
+     * read-only mode, so the confirmed tap lifts the lock and restarts within
+     * one busy span.  Writes are deliberately left enabled afterwards -- that
+     * is what the prompt asked the user to accept -- and [toggleReadOnly]'s
+     * own toast is skipped, since the restart note replaces it a few seconds
+     * later anyway.
+     */
+    fun enableWritesAndModemSsr() = work("enabling writes and restarting the modem") {
+        if (_state.value.readOnly) {
+            repo.setReadOnly(false)
+            _state.update { it.copy(readOnly = false) }
+        }
+        restartModem()
+    }
+
+    private suspend fun restartModem() {
         var reconnected = false
         val msg = try {
             reconnected = repo.modemSsr()
