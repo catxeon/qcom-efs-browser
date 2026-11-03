@@ -103,4 +103,58 @@ class FeatureCheckerTest {
         assertEquals(1, access.writes.size)
         assertEquals(nrBase + "cap_control_nrca_xf_plus_yt_swul_band_combos_v2", access.writes.single().first)
     }
+
+    private val qam = ALL_FEATURES.first { it.id == "nr_1024qam_tdd" }
+    private val qamPath = nrBase + "cap_feature_band_nr_v2"
+
+    @Test
+    fun `merge write creates the item with the default payload when it is absent`() = runBlocking {
+        val access = FakeAccess()
+        val c = FeatureChecker(access)
+        assertNull(c.disable(qam, slot = 0))
+        val written = access.writes.single()
+        assertEquals(qamPath, written.first)
+        assertEquals(List(29) { 0xFF } + 0x00 + listOf(0xFF, 0xFF), written.second)
+    }
+
+    @Test
+    fun `merge write keeps the other capability bits of an existing item`() = runBlocking {
+        val existing = listOf(0xFF, 0xFE, 0x00) + List(27) { 0xFF } + listOf(0xFF, 0xFF)
+        val access = FakeAccess(qamPath to existing)
+        val c = FeatureChecker(access)
+        assertNull(c.disable(qam, slot = 0))
+        val written = access.writes.single().second
+        assertEquals(0, written[29])
+        assertEquals(0xFE, written[1])
+        assertEquals(0x00, written[2])
+    }
+
+    @Test
+    fun `merge write pads a short existing item with FF`() = runBlocking {
+        val access = FakeAccess(qamPath to listOf(0x00, 0xFF))
+        val c = FeatureChecker(access)
+        assertNull(c.disable(qam, slot = 0))
+        val written = access.writes.single().second
+        assertEquals(32, written.size)
+        assertEquals(0x00, written[0])
+        assertEquals(0, written[29])
+        assertEquals(listOf(0x00, 0xFF) + List(27) { 0xFF } + listOf(0x00) + List(2) { 0xFF }, written)
+    }
+
+    @Test
+    fun `merge write reports a failed read as a write failure`() = runBlocking {
+        val access = FakeAccess().apply { failReadOn = qamPath }
+        val c = FeatureChecker(access)
+        assertEquals("Write failed for cap_feature_band_nr_v2", c.disable(qam, slot = 0))
+        assertEquals(0, access.writes.size)
+    }
+
+    @Test
+    fun `merge write targets the slot-mapped path`() = runBlocking {
+        val access = FakeAccess((qamPath + "_Subscription01") to listOf(0xFF, 0xFF))
+        val c = FeatureChecker(access)
+        assertNull(c.disable(qam, slot = 1))
+        assertEquals(qamPath + "_Subscription01", access.writes.single().first)
+        assertEquals(0, access.writes.single().second[29])
+    }
 }

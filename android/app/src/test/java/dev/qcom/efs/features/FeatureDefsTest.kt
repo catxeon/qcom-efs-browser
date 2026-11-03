@@ -10,8 +10,8 @@ class FeatureDefsTest {
     private fun disabledBytes(vararg ints: Int) = ints.toList()
 
     @Test
-    fun `table has 13 features with unique ids`() {
-        assertEquals(13, ALL_FEATURES.size)
+    fun `table has 14 features with unique ids`() {
+        assertEquals(14, ALL_FEATURES.size)
         assertEquals(ALL_FEATURES.size, ALL_FEATURES.map { it.id }.distinct().size)
         assertTrue(ALL_FEATURES.all { it.reads.isNotEmpty() && it.writes.isNotEmpty() })
     }
@@ -267,5 +267,47 @@ class FeatureDefsTest {
     fun `r16_2t1t with only five arrays is not disabled`() {
         val f = ALL_FEATURES.first { it.id == "r16_2t1t" }
         assertFalse(f.isDisabled(List(5) { listOf(0) }))
+    }
+
+    @Test
+    fun `nr_1024qam_tdd path, payload and merge`() {
+        val f = ALL_FEATURES.first { it.id == "nr_1024qam_tdd" }
+        val path = "/nv/item_files/modem/nr5g/RRC/cap_feature_band_nr_v2"
+        assertEquals(listOf(path), f.reads)
+        assertEquals(listOf(path), f.writes.map { it.path })
+
+        // A new item: every feature on (FF) except bits 233-240.
+        val fresh = List(29) { 0xFF } + 0x00 + listOf(0xFF, 0xFF)
+        assertEquals(32, fresh.size)
+        assertEquals(fresh, f.writes.single().bytes)
+
+        val merge = requireNotNull(f.writes.single().merge)
+        // Absent item (null) still produces that payload.
+        assertEquals(fresh, merge(null))
+        // An existing item keeps every other bit, including ones already cleared.
+        val existing = listOf(0xFF, 0xFE, 0x00) + List(27) { 0xFF } + listOf(0xFF, 0x00)
+        val merged = merge(existing)
+        assertEquals(existing.size, merged.size)
+        assertEquals(0, merged[29])
+        assertEquals(0xFE, merged[1])
+        assertEquals(0x00, merged[2])
+        assertEquals(0x00, merged[31])
+        // A short item is padded with FF before the byte is cleared, keeping
+        // whatever prefix it did carry.
+        assertEquals(fresh, merge(List(4) { 0xFF }))
+        assertEquals(listOf(0x00, 0xFF) + List(27) { 0xFF } + listOf(0x00) + List(2) { 0xFF }, merge(listOf(0x00, 0xFF)))
+        assertEquals(List(29) { 0xFF } + 0x00 + listOf(0xFF, 0xFF), merge(emptyList()))
+    }
+
+    @Test
+    fun `nr_1024qam_tdd disabled detection follows byte 30`() {
+        val f = ALL_FEATURES.first { it.id == "nr_1024qam_tdd" }
+        assertEquals("/nv/item_files/modem/nr5g/RRC/cap_feature_band_nr_v2", f.reads.single())
+        assertTrue(f.isDisabled(listOf(List(29) { 0xFF } + 0x00 + listOf(0xFF, 0xFF))))
+        // Trailing bytes are tolerated, as with the other bitmaps.
+        assertTrue(f.isDisabled(listOf(List(29) { 0xFF } + 0x00 + List(20) { 0xFF })))
+        assertFalse(f.isDisabled(listOf(List(32) { 0xFF })))
+        assertFalse(f.isDisabled(listOf(List(29) { 0xFF })))
+        assertFalse(f.isDisabled(listOf(listOf(0x00))))
     }
 }
