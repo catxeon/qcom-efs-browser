@@ -139,7 +139,7 @@ internal fun DetailSheet(
                     value = when {
                         tooLarge -> "not available (file is over ${humanSize(maxInline.toLong())})"
                         previewError != null -> "not available"
-                        sha == null -> "calculating…"
+                        sha == null -> "reading…"
                         else -> sha
                     },
                     copyable = sha != null,
