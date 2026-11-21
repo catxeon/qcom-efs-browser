@@ -1,6 +1,9 @@
 package dev.qcom.efs
 
+import android.os.Build
+import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -14,6 +17,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -23,7 +28,7 @@ import androidx.compose.ui.unit.dp
 
 /* The detail sheet: what an entry is, and what is inside it. */
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun DetailSheet(
     detail: Detail,
@@ -63,11 +68,57 @@ internal fun DetailSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(detail.entry.name, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                if (!detail.entry.isDir) {
-                    TextButton(onClick = onExport) {
-                        Icon(Icons.Filled.Download, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Save")
+                // Every action lives here at the top, so the buttons that used
+                // to sit below the content are never a scroll away.
+                var actions by remember { mutableStateOf(false) }
+                val canSave = !detail.entry.isDir
+                val canEdit = !readOnly && !detail.entry.isDir && !detail.entry.isLink
+                val canReplace = !readOnly && !detail.entry.isDir
+                if (canSave || !readOnly) {
+                    Box {
+                        TextButton(onClick = { actions = true }) {
+                            Text("Actions")
+                            Icon(Icons.Filled.ArrowDropDown, null, Modifier.size(18.dp))
+                        }
+                        DropdownMenu(expanded = actions, onDismissRequest = { actions = false }) {
+                            if (canSave) {
+                                DropdownMenuItem(
+                                    text = { Text("Save") },
+                                    leadingIcon = { Icon(Icons.Filled.Download, null) },
+                                    onClick = { actions = false; onExport() },
+                                )
+                            }
+                            if (canEdit) {
+                                DropdownMenuItem(
+                                    text = { Text("Edit") },
+                                    leadingIcon = { Icon(Icons.Filled.Edit, null) },
+                                    onClick = { actions = false; onEdit() },
+                                )
+                            }
+                            if (canReplace) {
+                                DropdownMenuItem(
+                                    text = { Text("Replace") },
+                                    leadingIcon = { Icon(Icons.Filled.Upload, null) },
+                                    onClick = { actions = false; onReplace() },
+                                )
+                            }
+                            if (!readOnly) {
+                                DropdownMenuItem(
+                                    text = { Text("chmod") },
+                                    leadingIcon = { Icon(Icons.Filled.Security, null) },
+                                    onClick = { actions = false; onChmod() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete") },
+                                    leadingIcon = { Icon(Icons.Filled.Delete, null) },
+                                    onClick = { actions = false; onDelete() },
+                                    colors = MenuDefaults.itemColors(
+                                        textColor = MaterialTheme.colorScheme.error,
+                                        leadingIconColor = MaterialTheme.colorScheme.error,
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -79,6 +130,21 @@ internal fun DetailSheet(
             KeyValue("Type", detail.entry.type)
             KeyValue("Mode", modeOctal(st?.mode ?: detail.entry.mode))
             KeyValue("Size", humanSize(contentSize.toLong()))
+            if (!detail.entry.isDir) {
+                // The preview bytes are already here, so the digest costs no
+                // extra read. Files the helper will not serve inline have no
+                // bytes to hash without downloading them in full.
+                val sha = remember(preview) { preview?.let { sha256Hex(it.bytes) } }
+                Sha256Row(
+                    value = when {
+                        tooLarge -> "not available (file is over ${humanSize(maxInline.toLong())})"
+                        previewError != null -> "not available"
+                        sha == null -> "reading…"
+                        else -> sha
+                    },
+                    copyable = sha != null,
+                )
+            }
             KeyValue("Modified", time(st?.mtime ?: detail.entry.mtime))
             KeyValue("Created", time(st?.ctime ?: detail.entry.ctime))
             st?.target?.let { KeyValue("Points at", it) }
@@ -112,36 +178,6 @@ internal fun DetailSheet(
                     preview != null -> InlinePreview(preview)
                 }
             }
-            if (!readOnly) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    if (!detail.entry.isDir && !detail.entry.isLink) {
-                        OutlinedButton(onClick = onEdit) {
-                            Icon(Icons.Filled.Edit, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Edit")
-                        }
-                    }
-                    if (!detail.entry.isDir) {
-                        OutlinedButton(onClick = onReplace) {
-                            Icon(Icons.Filled.Upload, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Replace")
-                        }
-                    }
-                    OutlinedButton(onClick = onChmod) { Text("chmod") }
-                    OutlinedButton(
-                        onClick = onDelete,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                    ) {
-                        Icon(Icons.Filled.Delete, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Delete")
-                    }
-                }
-            }
         }
     }
 }
@@ -151,6 +187,50 @@ private fun KeyValue(key: String, value: String) {
     Row(Modifier.fillMaxWidth()) {
         Text(key, Modifier.width(110.dp), style = MaterialTheme.typography.labelLarge)
         Text(value, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+/**
+ * The digest is 64 characters, far too wide for the one-line [KeyValue] row,
+ * so it wraps under its label. Tapping it copies the whole value: a plain tap
+ * rather than a text selection, whose copy pill otherwise stays over the
+ * sheet until the sheet itself is dismissed.
+ */
+@Composable
+private fun Sha256Row(value: String, copyable: Boolean) {
+    val ctx = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .then(
+                if (copyable) Modifier.clickable {
+                    clipboard.setText(AnnotatedString(value))
+                    // Android 13+ shows its own clipboard confirmation.
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                        Toast.makeText(ctx, "SHA-256 copied", Toast.LENGTH_SHORT).show()
+                    }
+                } else Modifier,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("SHA-256", Modifier.width(110.dp), style = MaterialTheme.typography.labelLarge)
+        Text(
+            value,
+            Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontFamily = if (copyable) FontFamily.Monospace else FontFamily.Default,
+            ),
+        )
+        if (copyable) {
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                Icons.Filled.ContentCopy,
+                "Copy SHA-256",
+                Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
