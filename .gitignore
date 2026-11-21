@@ -18,6 +18,7 @@ android/app/src/main/assets/qcom-efsd
 daemon/tools/qcom-efsd-dyn
 daemon/tools/qrtr_probe
 daemon/tools/qrtr_diag_probe
+daemon/tools/shell_access_probe
 *.o
 *.exe
 

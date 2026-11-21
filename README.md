@@ -315,6 +315,27 @@ can be expected on an external-modem setup, so also check the `/dev/diag`
 fallback result. Alongside it is `daemon/tools/qrtr_diag_probe.c` (a sweep of
 DIAG-exchange formats), which is how the transport was found on SM8350.
 
+### Could it run without root, through Shizuku?
+
+Shizuku would start the helper as uid 2000 in the `u:r:shell:s0` domain rather
+than as root, so everything depends on whether that domain is allowed near
+DIAG at all. `daemon/tools/shell_access_probe.sh` answers that for one phone:
+with the phone attached, it pushes a small probe, runs it **without** `su` and
+reports whether an `AF_QIPCRTR` socket can be created, which DIAG endpoints the
+bus announces, whether `/dev/diag` opens read-write, which modem-related nodes
+and services a shell can see, and any SELinux denial that matches.
+
+```bash
+sh daemon/tools/shell_access_probe.sh
+```
+
+It stops if adbd is running as root, because a root answer says nothing about
+what Shizuku would be permitted to do; a phone with Magisk can carry a patched
+policy as well, so a positive result there still needs confirming on a phone
+without root. Nothing on the device is changed — in particular the
+memory-device logging switch that a real session performs is deliberately not
+attempted, since that one affects DIAG logging system-wide.
+
 ---
 
 ## SELinux
@@ -527,6 +548,8 @@ daemon/
   test/mock_modem.py    fake EFS2 + NV with QRTR/local/external /dev/diag framing
   test/run_tests.py     the end-to-end test of the daemon against the mock
   tools/qrtr_diag_probe.c  a sweep of DIAG-over-QRTR exchange formats
+  tools/shell_access_probe.c|.sh  whether a shell uid, as Shizuku would give it,
+                                  can reach DIAG on a given phone
   tools/efsctl.py       a client to the daemon over adb forward, without the app
   tools/write_test.py           a reversible write check on a live modem
   tools/rename_symlink_test.py  the same for rename, symlink and readlink
