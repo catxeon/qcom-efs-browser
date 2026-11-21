@@ -225,3 +225,19 @@ fun parseHexText(text: String): ByteArray {
 fun byteHue(value: Int): Float = ((value and 0xFF) * 97 and 0xFF) / 256f * 360f
 
 private const val HEX = "0123456789abcdef"
+
+/**
+ * Lowercase SHA-256 of [bytes], for checking a modem file against a copy on
+ * the user's computer. Hashing happens over the bytes the detail sheet has
+ * already read, so it costs no extra transfer.
+ */
+fun sha256Hex(bytes: ByteArray): String {
+    val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+    return buildString(digest.size * 2) {
+        for (b in digest) {
+            val v = b.toInt() and 0xFF
+            append(HEX[v shr 4])
+            append(HEX[v and 0xF])
+        }
+    }
+}

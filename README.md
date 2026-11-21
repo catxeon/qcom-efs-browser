@@ -28,7 +28,7 @@ Here, EFS2 and NV operations use Qualcomm DIAG.
 |---|---|
 | Browse the EFS tree | folder navigation, search within the current folder, sorting by name/size/date; `EFS2_DIAG_OPENDIR/READDIR/CLOSEDIR` underneath |
 | Metadata, symlinks | `LSTAT` falling back to `STAT` + `READLINK` |
-| View a file (text/hex) | inline detail sheet; `OPEN/READ/CLOSE`, with `GET` for item files; inline reads up to 512 KiB |
+| View a file (text/hex) | inline detail sheet; `OPEN/READ/CLOSE`, with `GET` for item files; inline reads up to 512 KiB, plus a selectable SHA-256 of the previewed bytes for comparing against a local copy |
 | Edit a file in place | built-in text editor for XML and the like, hex editor for item files; up to 64 KiB |
 | Save a file to the phone | read → cache → SAF (`CreateDocument`) |
 | Upload/replace a file, with a type choice | ordinary file — `OPEN/WRITE/CLOSE`; item file — atomic `PUT` |

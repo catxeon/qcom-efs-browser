@@ -23,7 +23,7 @@ import androidx.compose.ui.unit.dp
 
 /* The detail sheet: what an entry is, and what is inside it. */
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun DetailSheet(
     detail: Detail,
@@ -63,11 +63,57 @@ internal fun DetailSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(detail.entry.name, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-                if (!detail.entry.isDir) {
-                    TextButton(onClick = onExport) {
-                        Icon(Icons.Filled.Download, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Save")
+                // Every action lives here at the top, so the buttons that used
+                // to sit below the content are never a scroll away.
+                var actions by remember { mutableStateOf(false) }
+                val canSave = !detail.entry.isDir
+                val canEdit = !readOnly && !detail.entry.isDir && !detail.entry.isLink
+                val canReplace = !readOnly && !detail.entry.isDir
+                if (canSave || !readOnly) {
+                    Box {
+                        TextButton(onClick = { actions = true }) {
+                            Text("Actions")
+                            Icon(Icons.Filled.ArrowDropDown, null, Modifier.size(18.dp))
+                        }
+                        DropdownMenu(expanded = actions, onDismissRequest = { actions = false }) {
+                            if (canSave) {
+                                DropdownMenuItem(
+                                    text = { Text("Save") },
+                                    leadingIcon = { Icon(Icons.Filled.Download, null) },
+                                    onClick = { actions = false; onExport() },
+                                )
+                            }
+                            if (canEdit) {
+                                DropdownMenuItem(
+                                    text = { Text("Edit") },
+                                    leadingIcon = { Icon(Icons.Filled.Edit, null) },
+                                    onClick = { actions = false; onEdit() },
+                                )
+                            }
+                            if (canReplace) {
+                                DropdownMenuItem(
+                                    text = { Text("Replace") },
+                                    leadingIcon = { Icon(Icons.Filled.Upload, null) },
+                                    onClick = { actions = false; onReplace() },
+                                )
+                            }
+                            if (!readOnly) {
+                                DropdownMenuItem(
+                                    text = { Text("chmod") },
+                                    leadingIcon = { Icon(Icons.Filled.Security, null) },
+                                    onClick = { actions = false; onChmod() },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete") },
+                                    leadingIcon = { Icon(Icons.Filled.Delete, null) },
+                                    onClick = { actions = false; onDelete() },
+                                    colors = MenuDefaults.itemColors(
+                                        textColor = MaterialTheme.colorScheme.error,
+                                        leadingIconColor = MaterialTheme.colorScheme.error,
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -79,6 +125,21 @@ internal fun DetailSheet(
             KeyValue("Type", detail.entry.type)
             KeyValue("Mode", modeOctal(st?.mode ?: detail.entry.mode))
             KeyValue("Size", humanSize(contentSize.toLong()))
+            if (!detail.entry.isDir) {
+                // The preview bytes are already here, so the digest costs no
+                // extra read. Files the helper will not serve inline have no
+                // bytes to hash without downloading them in full.
+                val sha = remember(preview) { preview?.let { sha256Hex(it.bytes) } }
+                Sha256Row(
+                    value = when {
+                        tooLarge -> "not available (file is over ${humanSize(maxInline.toLong())})"
+                        previewError != null -> "not available"
+                        sha == null -> "calculating…"
+                        else -> sha
+                    },
+                    monospace = sha != null,
+                )
+            }
             KeyValue("Modified", time(st?.mtime ?: detail.entry.mtime))
             KeyValue("Created", time(st?.ctime ?: detail.entry.ctime))
             st?.target?.let { KeyValue("Points at", it) }
@@ -112,36 +173,6 @@ internal fun DetailSheet(
                     preview != null -> InlinePreview(preview)
                 }
             }
-            if (!readOnly) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    if (!detail.entry.isDir && !detail.entry.isLink) {
-                        OutlinedButton(onClick = onEdit) {
-                            Icon(Icons.Filled.Edit, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Edit")
-                        }
-                    }
-                    if (!detail.entry.isDir) {
-                        OutlinedButton(onClick = onReplace) {
-                            Icon(Icons.Filled.Upload, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Replace")
-                        }
-                    }
-                    OutlinedButton(onClick = onChmod) { Text("chmod") }
-                    OutlinedButton(
-                        onClick = onDelete,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                    ) {
-                        Icon(Icons.Filled.Delete, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Delete")
-                    }
-                }
-            }
         }
     }
 }
@@ -151,6 +182,26 @@ private fun KeyValue(key: String, value: String) {
     Row(Modifier.fillMaxWidth()) {
         Text(key, Modifier.width(110.dp), style = MaterialTheme.typography.labelLarge)
         Text(value, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+/**
+ * The digest is 64 characters, far too wide for the one-line [KeyValue] row,
+ * so it wraps under its label and stays selectable: comparing it with a hash
+ * from a computer is the whole point, and pasting beats typing.
+ */
+@Composable
+private fun Sha256Row(value: String, monospace: Boolean) {
+    Row(Modifier.fillMaxWidth()) {
+        Text("SHA-256", Modifier.width(110.dp), style = MaterialTheme.typography.labelLarge)
+        SelectionContainer(Modifier.weight(1f)) {
+            Text(
+                value,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = if (monospace) FontFamily.Monospace else FontFamily.Default,
+                ),
+            )
+        }
     }
 }
 
