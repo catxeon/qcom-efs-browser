@@ -1,6 +1,9 @@
 package dev.qcom.efs
 
+import android.os.Build
+import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -14,6 +17,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -137,7 +142,7 @@ internal fun DetailSheet(
                         sha == null -> "calculating…"
                         else -> sha
                     },
-                    monospace = sha != null,
+                    copyable = sha != null,
                 )
             }
             KeyValue("Modified", time(st?.mtime ?: detail.entry.mtime))
@@ -187,19 +192,43 @@ private fun KeyValue(key: String, value: String) {
 
 /**
  * The digest is 64 characters, far too wide for the one-line [KeyValue] row,
- * so it wraps under its label and stays selectable: comparing it with a hash
- * from a computer is the whole point, and pasting beats typing.
+ * so it wraps under its label. Tapping it copies the whole value: a plain tap
+ * rather than a text selection, whose copy pill otherwise stays over the
+ * sheet until the sheet itself is dismissed.
  */
 @Composable
-private fun Sha256Row(value: String, monospace: Boolean) {
-    Row(Modifier.fillMaxWidth()) {
+private fun Sha256Row(value: String, copyable: Boolean) {
+    val ctx = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .then(
+                if (copyable) Modifier.clickable {
+                    clipboard.setText(AnnotatedString(value))
+                    // Android 13+ shows its own clipboard confirmation.
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                        Toast.makeText(ctx, "SHA-256 copied", Toast.LENGTH_SHORT).show()
+                    }
+                } else Modifier,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Text("SHA-256", Modifier.width(110.dp), style = MaterialTheme.typography.labelLarge)
-        SelectionContainer(Modifier.weight(1f)) {
-            Text(
-                value,
-                style = MaterialTheme.typography.bodySmall.copy(
-                    fontFamily = if (monospace) FontFamily.Monospace else FontFamily.Default,
-                ),
+        Text(
+            value,
+            Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall.copy(
+                fontFamily = if (copyable) FontFamily.Monospace else FontFamily.Default,
+            ),
+        )
+        if (copyable) {
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                Icons.Filled.ContentCopy,
+                "Copy SHA-256",
+                Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
